@@ -12,18 +12,18 @@ Every compiler has a different opinion on 16 byte atomics and they rarely align 
 
 If you already know how to use atomics, the API should look familiar. There are however slight differences (+ some opinions on how atomics should be used). 
 
-1. Memory ordering is passed as a template parameter to avoid unnecessary codegen
-2. `atomic_ref` doesn't exist, instead usage of the `atomic_*` free functions is encouraged (can be added in the future if actually needed, or you could add it yourself by storing a pointer in a class and wrapping the free functions as methods)
-3. No operators are overloaded to discourage bad habits of treating atomics like regular variables
+1. Memory ordering is passed as a template parameter to avoid unnecessary codegen.
+2. `atomic_ref` doesn't exist, instead usage of the `atomic_*` free functions is encouraged (can be added in the future if actually needed, or you could add it yourself by storing a pointer in a class and wrapping the free functions as methods).
+3. No operators are overloaded to discourage bad habits of treating atomics like regular variables.
 
 
 ## Warnings and Caveats
-1. Only x86_64 and arm64 are supported for now
-2. On macOS wait and notify are implemented yet
-3. Currently only objects with power-of-2 sizes are supported where padding bits **CAN** affect CAS operations (would like to change this in the future) 
-4. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks (might change this in the future)
+1. Only x86_64 and arm64 are supported for now.
+2. On macOS wait and notify_one/notify_all functions are not implemented yet.
+3. Currently only objects with power-of-2 sizes are supported where padding bits **CAN** affect CAS operations (would like to change this in the future).
+4. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks (might change this in the future).
 5. When using the free functions to do atomic operations you have to make sure your variables are properly aligned to their own size (meaning `address of object` % `size of object` == 0), otherwise you will get **undefined behaviour**. This is taken care of in the `atomic` template by doing `alignas(sizeof(T)) T object{};`[^1].
-6. On linux this library currently depends on libc for atomic intrisincs for <= 8 bytes, which are universally lock-less, and `long syscall(long, ...)` to support wait and notify primitives (will most likely change this in the future)
+6. On linux this library currently depends on libc for atomic intrisincs for <= 8 bytes, which are universally lock-less, and `long syscall(long, ...)` to support wait and notify primitives (will most likely change this in the future).
 
 [^1]: Technically 16 byte atomics only need to be 8 byte aligned to work though.
 
