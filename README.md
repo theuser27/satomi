@@ -9,6 +9,7 @@ TL;DR: portable lock-less 16 byte atomics don't exist at the time of writing.
 Every compiler has a different opinion on 16 byte atomics and they rarely align with the others. Unfortunately some (GCC) [don't even honour compiler flags](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=80878) to force generation of desired assembly. Others still (MSVC) don't guarantee it because of [ABI breakage](https://developercommunity.visualstudio.com/t/optimize-stdatomic-for-16-byte-types-use-interlock/498970#T-N1528823) (though it is supported by default for atomic_ref). And even though the last of the big 3 (Clang) does support them through a compiler flag (`-mcx16`) it is still unfortunate that you need to remember to pass it into the compiler. For a more in-depth analysis I recommend reading [Timur Doumler's blog post](https://timur.audio/dwcas-in-c) on the matter.
 
 ---
+
 If you already know how to use atomics, the API should look familiar. There are however slight differences (+ some opinions on how atomics should be used). 
 
 1. Memory ordering is passed as a template parameter to avoid unnecessary codegen
@@ -17,10 +18,12 @@ If you already know how to use atomics, the API should look familiar. There are 
 
 
 ## Warnings and Caveats
-1. Currently only objects with power-of-2 sizes are supported where padding bits **CAN** affect CAS operations (would like to change this in the future) 
-2. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks (might change this in the future)
-3. When using the free functions to do atomic operations you have to make sure your variables are properly aligned to their own size (meaning `address of object` % `size of object` == 0), otherwise you will get **undefined behaviour**. This is taken care of in the `atomic` template by doing `alignas(sizeof(T)) T object{};`[^1].
-4. On linux this library currently depends on libc for atomic intrisincs for <= 8 bytes, which are universally lock-less, and `long syscall(long, ...)` to support wait and notify primitives (will most likely change this in the future)
+1. Only x86_64 and arm64 are supported for now
+2. On macOS wait and notify are implemented yet
+3. Currently only objects with power-of-2 sizes are supported where padding bits **CAN** affect CAS operations (would like to change this in the future) 
+4. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks (might change this in the future)
+5. When using the free functions to do atomic operations you have to make sure your variables are properly aligned to their own size (meaning `address of object` % `size of object` == 0), otherwise you will get **undefined behaviour**. This is taken care of in the `atomic` template by doing `alignas(sizeof(T)) T object{};`[^1].
+6. On linux this library currently depends on libc for atomic intrisincs for <= 8 bytes, which are universally lock-less, and `long syscall(long, ...)` to support wait and notify primitives (will most likely change this in the future)
 
 [^1]: Technically 16 byte atomics only need to be 8 byte aligned to work though.
 
