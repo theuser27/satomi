@@ -35,7 +35,7 @@
 // adding simple constexpr support for operations
 #define SATOMI_IS_CONSTANT_EVALUATED() __builtin_is_constant_evaluated()
 
-#define SATOMI_IS_SAME_HELPER(...) detail::type_list<__VA_ARGS__>::all_same()
+#define SATOMI_IS_SAME(...) detail::type_list<__VA_ARGS__>::all_same()
 #define SATOMI_IS_POINTER(T) requires(T a) { [](auto *){}(a); }
 
 extern "C"
@@ -213,45 +213,45 @@ namespace satomi
 
     if constexpr (sizeof(T) == 1)
     {
-      __int8 ret, desiredUnderlying = SATOMI_BIT_CAST(__int8, desired), expectedUnderlying = SATOMI_BIT_CAST(__int8, expected);
-      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange8, ((volatile __int8 *)&object, desiredUnderlying, expectedUnderlying))
-      if (ret == expectedUnderlying) return true;
+      __int8 ret, d = SATOMI_BIT_CAST(__int8, desired), e = SATOMI_BIT_CAST(__int8, expected);
+      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange8, ((volatile __int8 *)&object, d, e))
+      if (ret == e) return true;
       expected = SATOMI_BIT_CAST(T, ret);
       return false;
     }
     else if constexpr (sizeof(T) == 2)
     {
-      __int16 ret, desiredUnderlying = SATOMI_BIT_CAST(__int16, desired), expectedUnderlying = SATOMI_BIT_CAST(__int16, expected);
-      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange16, ((volatile __int16 *)&object, desiredUnderlying, expectedUnderlying))
-      if (ret == expectedUnderlying) return true;
+      __int16 ret, d = SATOMI_BIT_CAST(__int16, desired), e = SATOMI_BIT_CAST(__int16, expected);
+      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange16, ((volatile __int16 *)&object, d, e))
+      if (ret == e) return true;
       expected = SATOMI_BIT_CAST(T, ret);
       return false;
     }
     else if constexpr (sizeof(T) == 4)
     {
-      __int32 ret, desiredUnderlying = SATOMI_BIT_CAST(__int32, desired), expectedUnderlying = SATOMI_BIT_CAST(__int32, expected);
-      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange, ((volatile long *)&object, desiredUnderlying, expectedUnderlying))
-      if (ret == expectedUnderlying) return true;
+      __int32 ret, d = SATOMI_BIT_CAST(__int32, desired), e = SATOMI_BIT_CAST(__int32, expected);
+      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange, ((volatile long *)&object, d, e))
+      if (ret == e) return true;
       expected = SATOMI_BIT_CAST(T, ret);
       return false;
     }
     else if constexpr (sizeof(T) == 8)
     {
-      __int64 ret, desiredUnderlying = SATOMI_BIT_CAST(__int64, desired), expectedUnderlying = SATOMI_BIT_CAST(__int64, expected);
-      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange64, ((volatile __int64 *)&object, desiredUnderlying, expectedUnderlying))
-      if (ret == expectedUnderlying) return true;
+      __int64 ret, d = SATOMI_BIT_CAST(__int64, desired), e = SATOMI_BIT_CAST(__int64, expected);
+      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange64, ((volatile __int64 *)&object, d, e))
+      if (ret == e) return true;
       expected = SATOMI_BIT_CAST(T, ret);
       return false;
     }
     else if constexpr (sizeof(T) == 16)
     {
-      struct int128__ { __int64 v[2]; } desiredUnderlying;
+      struct int128__ { __int64 v[2]; } d;
       
-      desiredUnderlying = SATOMI_BIT_CAST(int128__, desired);
+      d = SATOMI_BIT_CAST(int128__, desired);
 
       unsigned char result;
       SATOMI_CHOOSE_MEMORY_ORDER(order, result = _InterlockedCompareExchange128, ((volatile __int64 *)&object, 
-        desiredUnderlying.v[1], desiredUnderlying.v[0], (__int64 *)&expected))
+        d.v[1], d.v[0], (__int64 *)&expected))
       
       return result != 0;
     }
@@ -285,9 +285,9 @@ namespace satomi
 
     #elif defined (__aarch64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original, d, e;
-      d = SATOMI_BIT_CAST(uint128__, desired);
-      e = SATOMI_BIT_CAST(uint128__, expected);
+      struct uint128__ { __UINT64_TYPE__ v[2]; } original;
+      auto d = SATOMI_BIT_CAST(uint128__, desired);
+      auto e = SATOMI_BIT_CAST(uint128__, expected);
       bool success;
       
       #define SATOMI_ATOMIC_ASM(load_order, store_order)                                \
@@ -354,9 +354,9 @@ namespace satomi
       return atomic_compare_exchange_strong<order>(object, expected, desired);
     #elif defined(__aarch64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original, d, e;
-      d = SATOMI_BIT_CAST(uint128__, desired);
-      e = SATOMI_BIT_CAST(uint128__, expected);
+      struct uint128__ { __UINT64_TYPE__ v[2]; } original;
+      auto d = SATOMI_BIT_CAST(uint128__, desired);
+      auto e = SATOMI_BIT_CAST(uint128__, expected);
       bool success;
 
       #define SATOMI_ATOMIC_ASM(load_order, store_order)                                \
@@ -406,26 +406,26 @@ namespace satomi
 
     if constexpr (sizeof(T) == 1)
     {
-      __int8 ret, valueUnderlying = SATOMI_BIT_CAST(__int8, value);
-      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedExchange8, ((volatile __int8 *)&object, valueUnderlying))
+      __int8 ret, v = SATOMI_BIT_CAST(__int8, value);
+      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedExchange8, ((volatile __int8 *)&object, v))
       return SATOMI_BIT_CAST(T, ret);
     }
     else if constexpr (sizeof(T) == 2)
     {
-      __int16 ret, valueUnderlying = SATOMI_BIT_CAST(__int16, value);
-      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedExchange16, ((volatile __int16 *)&object, valueUnderlying))
+      __int16 ret, v = SATOMI_BIT_CAST(__int16, value);
+      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedExchange16, ((volatile __int16 *)&object, v))
       return SATOMI_BIT_CAST(T, ret);
     }
     else if constexpr (sizeof(T) == 4)
     {
-      __int32 ret, valueUnderlying = SATOMI_BIT_CAST(__int32, value);
-      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedExchange, ((volatile long *)&object, valueUnderlying))
+      __int32 ret, v = SATOMI_BIT_CAST(__int32, value);
+      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedExchange, ((volatile long *)&object, v))
       return SATOMI_BIT_CAST(T, ret);
     }
     else if constexpr (sizeof(T) == 8)
     {
-      __int64 ret, valueUnderlying = SATOMI_BIT_CAST(__int64, value);
-      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedExchange64, ((volatile __int64 *)&object, valueUnderlying))
+      __int64 ret, v = SATOMI_BIT_CAST(__int64, value);
+      SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedExchange64, ((volatile __int64 *)&object, v))
       return SATOMI_BIT_CAST(T, ret);
     }
     else if constexpr (sizeof(T) == 16)
@@ -467,8 +467,8 @@ namespace satomi
 
     #elif defined (__aarch64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original, underlying;
-      underlying = SATOMI_BIT_CAST(uint128__, value);
+      struct uint128__ { __UINT64_TYPE__ v[2]; } original;
+      auto v = SATOMI_BIT_CAST(uint128__, value);
       unsigned int success;
       
       #define SATOMI_ATOMIC_ASM(load_order, store_order)                            \
@@ -480,7 +480,7 @@ namespace satomi
           "cbnz %w[success], 1b\n\t"                                                \
           : [success] "=&r" (success), [target] "+Q" (object),                      \
             [original_0] "=&r" (original.v[0u]), [original_1] "=&r" (original.v[1u])\
-          : [value_0] "r" (underlying.v[0u]), [value_1] "r" (underlying.v[1u])      \
+          : [value_0] "r" (v.v[0u]), [value_1] "r" (v.v[1u])                        \
           : "memory"                                                                \
         );
 
@@ -518,43 +518,43 @@ namespace satomi
 
     if constexpr (sizeof(T) == 1)
     {
-      auto underlying = __iso_volatile_load8((const volatile __int8 *)&object);
+      auto v = __iso_volatile_load8((const volatile __int8 *)&object);
       if constexpr (order != memory_order_relaxed)
         SATOMI_COMPILER_OR_MEMORY_BARRIER();
-      return SATOMI_BIT_CAST(T, underlying);
+      return SATOMI_BIT_CAST(T, v);
     }
     else if constexpr (sizeof(T) == 2)
     {
-      auto underlying = __iso_volatile_load16((const volatile __int16 *)&object);
+      auto v = __iso_volatile_load16((const volatile __int16 *)&object);
       if constexpr (order != memory_order_relaxed)
         SATOMI_COMPILER_OR_MEMORY_BARRIER();
-      return SATOMI_BIT_CAST(T, underlying);
+      return SATOMI_BIT_CAST(T, v);
     }
     else if constexpr (sizeof(T) == 4)
     {
-      auto underlying = __iso_volatile_load32((const volatile __int32 *)&object);
+      auto v = __iso_volatile_load32((const volatile __int32 *)&object);
       if constexpr (order != memory_order_relaxed)
         SATOMI_COMPILER_OR_MEMORY_BARRIER();
-      return SATOMI_BIT_CAST(T, underlying);
+      return SATOMI_BIT_CAST(T, v);
     }
     else if constexpr (sizeof(T) == 8)
     {
     #ifdef _M_ARM
-      auto underlying = __ldrexd((const volatile __int64 *)&object);
+      auto v = __ldrexd((const volatile __int64 *)&object);
     #else
-      auto underlying = __iso_volatile_load64((const volatile __int64 *)&object);
+      auto v = __iso_volatile_load64((const volatile __int64 *)&object);
     #endif
       if constexpr (order != memory_order_relaxed)
         SATOMI_COMPILER_OR_MEMORY_BARRIER();
-      return SATOMI_BIT_CAST(T, underlying);
+      return SATOMI_BIT_CAST(T, v);
     }
     else if constexpr (sizeof(T) == 16)
     {
-      struct int128__ { __int64 v[2]{}; } underlying{};
+      struct int128__ { __int64 v[2]{}; } v{};
 
-      SATOMI_CHOOSE_MEMORY_ORDER(order, (void)_InterlockedCompareExchange128, ((volatile __int64 *)&object, 0, 0, underlying.v))
+      SATOMI_CHOOSE_MEMORY_ORDER(order, (void)_InterlockedCompareExchange128, ((volatile __int64 *)&object, 0, 0, v.v))
       
-      return SATOMI_BIT_CAST(T, underlying);
+      return SATOMI_BIT_CAST(T, v);
     }
 
   #else
@@ -574,21 +574,21 @@ namespace satomi
         if ((((__UINTPTR_TYPE__)&object) & 15) == 0)
         {
           using uint128__ = __UINT64_TYPE__ __attribute__((__vector_size__(16)));
-          uint128__ underlying;
+          uint128__ v;
           __asm__ __volatile__
           (
             "vmovdqa %[target], %[value]\n\t"
-            : [value] "=x" (underlying)
+            : [value] "=x" (v)
             : [target] "m" (object)
             : "memory"
           );
 
-          return SATOMI_BIT_CAST(T, underlying);
+          return SATOMI_BIT_CAST(T, v);
         }
 
       #endif
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } underlying;
+      struct uint128__ { __UINT64_TYPE__ v[2]; } v;
 
       __asm__ __volatile__
       (
@@ -596,12 +596,12 @@ namespace satomi
         "movq %%rbx, %%rax\n\t"
         "movq %%rcx, %%rdx\n\t"
         "lock; cmpxchg16b %[target]\n\t"
-        : "=&a" (underlying.v[0]), "=&d" (underlying.v[1])
+        : "=&a" (v.v[0]), "=&d" (v.v[1])
         : [target] "m" (object)
         : "cc", "memory"
       );
 
-      return SATOMI_BIT_CAST(T, underlying);
+      return SATOMI_BIT_CAST(T, v);
 
     #elif defined(__aarch64__)
         
@@ -652,20 +652,20 @@ namespace satomi
   #if defined(_MSC_VER) && ! (__clang__)
 
   #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
-    #define SATOMI_SEQ_CST_STORE(iso_suffix, ...) SATOMI_COMPILER_OR_MEMORY_BARRIER(); __iso_volatile_store##iso_suffix(memory, underlying); SATOMI_COMPILER_OR_MEMORY_BARRIER();
+    #define SATOMI_SEQ_CST_STORE(iso_suffix, ...) SATOMI_COMPILER_OR_MEMORY_BARRIER(); __iso_volatile_store##iso_suffix(memory, v); SATOMI_COMPILER_OR_MEMORY_BARRIER();
   #else
-    #define SATOMI_SEQ_CST_STORE(iso_suffix, interlocked_suffix, ...) (void)_InterlockedExchange##interlocked_suffix(__VA_ARGS__ memory, underlying);
+    #define SATOMI_SEQ_CST_STORE(iso_suffix, interlocked_suffix, ...) (void)_InterlockedExchange##interlocked_suffix(__VA_ARGS__ memory, v);
   #endif
 
     #define SATOMI_DEFINE_STORE_MEMORY_ORDERS(iso_suffix, interlocked_suffix, ...)\
       auto memory = (volatile __int##iso_suffix *)&object;                        \
-      auto underlying = SATOMI_BIT_CAST(__int##iso_suffix, value);                \
+      auto v = SATOMI_BIT_CAST(__int##iso_suffix, value);                         \
       if constexpr (order == memory_order_relaxed)                                \
-        __iso_volatile_store##iso_suffix(memory, underlying);                     \
+        __iso_volatile_store##iso_suffix(memory, v);                              \
       else if constexpr (order == memory_order_release)                           \
       {                                                                           \
         SATOMI_COMPILER_OR_MEMORY_BARRIER();                                      \
-        __iso_volatile_store##iso_suffix(memory, underlying);                     \
+        __iso_volatile_store##iso_suffix(memory, v);                              \
       }                                                                           \
       else                                                                        \
       {                                                                           \
@@ -698,12 +698,12 @@ namespace satomi
         using uint128__ = __UINT64_TYPE__ __attribute__((__vector_size__(16)));
         if ((((__UINTPTR_TYPE__)&object) & 15) == 0)
         {
-          auto underlying = SATOMI_BIT_CAST(uint128__, value);
+          auto v = SATOMI_BIT_CAST(uint128__, value);
           __asm__ __volatile__
           (
             "vmovdqa %[value], %[storage]\n\t"
             : [storage] "=m" (object)
-            : [value] "x" (underlying)
+            : [value] "x" (v)
             : "memory"
           );
 
@@ -713,7 +713,7 @@ namespace satomi
       #endif
 
         struct uint128___ { __UINT64_TYPE__ v[2]; };
-        auto underlying = SATOMI_BIT_CAST(uint128___, value);
+        auto v = SATOMI_BIT_CAST(uint128___, value);
 
         __asm__ __volatile__
         (
@@ -723,14 +723,14 @@ namespace satomi
           "1: lock; cmpxchg16b %[target_lo]\n\t"
           "jne 1b\n\t"
           : [target_lo] "=m" (object), [target_hi] "=m" (reinterpret_cast<volatile __UINT64_TYPE__ *>(&object)[1])
-          : "b" (underlying.v[0]), "c" (underlying.v[1])
+          : "b" (v.v[0]), "c" (v.v[1])
           : "cc", "rax", "rdx", "memory"
         );
 
     #elif defined(__aarch64__)
         
       struct uint128__ { __UINT64_TYPE__ v[2]; } original;
-      auto underlying = SATOMI_BIT_CAST(uint128__, value);
+      auto v = SATOMI_BIT_CAST(uint128__, value);
       unsigned success;
 
       #define SATOMI_DEFINE_STORE_MEMORY_ORDERS(store_order)                        \
@@ -742,7 +742,7 @@ namespace satomi
           "cbnz %w[success], 1b\n\t"                                                \
           : [success] "=&r" (success), [target] "+Q" (object),                      \
             [original_0] "=&r" (original.v[0u]), [original_1] "=&r" (original.v[1u])\
-          : [value_0] "r" (underlying.v[0u]), [value_1] "r" (underlying.v[1u])      \
+          : [value_0] "r" (v.v[0u]), [value_1] "r" (v.v[1u])                        \
           : "memory"                                                                \
         );
 
@@ -827,7 +827,7 @@ namespace satomi
       #endif
 
       struct uint128__ { __UINT64_TYPE__ v[2]; } original, result;
-      auto operand_underlying = SATOMI_BIT_CAST(uint128__, operand);
+      auto o = SATOMI_BIT_CAST(uint128__, operand);
       unsigned success;
 
       #define SATOMI_ATOMIC_ASM(load_order, store_order)                                                        \
@@ -842,7 +842,7 @@ namespace satomi
           : [success] "=&r" (success), [target] "+Q" (&object),                                                 \
             [original_0] "=&r" (original.v[0]), [original_1] "=&r" (original.v[1]),                             \
             [result_0] "=&r" (result.v[0]), [result_1] "=&r" (result.v[1])                                      \
-          : [operand_0] "Lr" (operand_underlying.v[0]), [operand_1] "Lr" (operand_underlying.v[1])              \
+          : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                                                \
           : "cc", "memory"                                                                                      \
         );
       
@@ -967,7 +967,7 @@ namespace satomi
     #elif defined(__aarch64__)
 
       struct uint128__ { __UINT64_TYPE__ v[2]; } original, result;
-      auto operand_underlying = SATOMI_BIT_CAST(uint128__, operand);
+      auto o = SATOMI_BIT_CAST(uint128__, operand);
       unsigned success;
 
       #define SATOMI_ATOMIC_ASM(load_order, store_order)                              \
@@ -982,8 +982,8 @@ namespace satomi
           : [success] "=&r" (success), [target] "+Q" (&object),                       \
             [original_0] "=&r" (original.v[0]), [original_1] "=&r" (original.v[1]),   \
             [result_0] "=&r" (result.v[0]), [result_1] "=&r" (result.v[1])            \
-          : [operand_0] "Lr" (operand_underlying.v[0]),                               \
-            [operand_1] "Lr" (operand_underlying.v[1])                                \
+          : [operand_0] "Lr" (o.v[0]),                                                \
+            [operand_1] "Lr" (o.v[1])                                                 \
           : "cc", "memory"                                                            \
         );
       
@@ -1053,7 +1053,7 @@ namespace satomi
     #elif defined(__aarch64__)
 
       struct uint128__ { __UINT64_TYPE__ v[2]; } original, result;
-      auto operand_underlying = SATOMI_BIT_CAST(uint128__, operand);
+      auto o = SATOMI_BIT_CAST(uint128__, operand);
       unsigned success;
 
       #define SATOMI_ATOMIC_ASM(load_order, store_order)                              \
@@ -1068,8 +1068,8 @@ namespace satomi
           : [success] "=&r" (success), [target] "+Q" (&object),                       \
             [original_0] "=&r" (original.v[0]), [original_1] "=&r" (original.v[1]),   \
             [result_0] "=&r" (result.v[0]), [result_1] "=&r" (result.v[1])            \
-          : [operand_0] "Lr" (operand_underlying.v[0]),                               \
-            [operand_1] "Lr" (operand_underlying.v[1])                                \
+          : [operand_0] "Lr" (o.v[0]),                                                \
+            [operand_1] "Lr" (o.v[1])                                                 \
           : "cc", "memory"                                                            \
         );
       
@@ -1138,7 +1138,7 @@ namespace satomi
     #elif defined(__aarch64__)
 
       struct uint128__ { __UINT64_TYPE__ v[2]; } original, result;
-      auto operand_underlying = SATOMI_BIT_CAST(uint128__, operand);
+      auto o = SATOMI_BIT_CAST(uint128__, operand);
       unsigned success;
 
       #define SATOMI_ATOMIC_ASM(load_order, store_order)                              \
@@ -1153,8 +1153,8 @@ namespace satomi
           : [success] "=&r" (success), [target] "+Q" (&object),                       \
             [original_0] "=&r" (original.v[0]), [original_1] "=&r" (original.v[1]),   \
             [result_0] "=&r" (result.v[0]), [result_1] "=&r" (result.v[1])            \
-          : [operand_0] "Lr" (operand_underlying.v[0]),                               \
-            [operand_1] "Lr" (operand_underlying.v[1])                                \
+          : [operand_0] "Lr" (o.v[0]),                                                \
+            [operand_1] "Lr" (o.v[1])                                                 \
           : "cc", "memory"                                                            \
         );
       
@@ -1358,12 +1358,22 @@ namespace satomi
   #endif
   }
 
-  template<typename T>
+  #define SATOMI_CONDITIONAL(Test, True, False) decltype([](True *t___, False *f___) { if constexpr (Test) return *t___; else return *f___; }(nullptr, nullptr))
+
+  template<typename T, bool owns_data = true>
   class atomic
   {
+    struct data_holder
+    {
+      alignas(sizeof(T)) T object{};
+      T &operator*() { return object; }
+      const T &operator*() const { return object; }
+    };
+    using storage_type = SATOMI_CONDITIONAL(owns_data, data_holder, T *);
+
     static_assert(__is_trivially_copyable(T), "Type must be trivially copyable");
-    static_assert(!SATOMI_IS_SAME_HELPER(T, const T) && !SATOMI_IS_SAME_HELPER(T, volatile T), "Type must NOT be const or volatile");
-    static_assert(!SATOMI_IS_SAME_HELPER(T, T &) && !SATOMI_IS_SAME_HELPER(T, T &&), "Type must NOT be a reference");
+    static_assert(!SATOMI_IS_SAME(T, const T) && !SATOMI_IS_SAME(T, volatile T), "Type must NOT be const or volatile");
+    static_assert(!SATOMI_IS_SAME(T, T &) && !SATOMI_IS_SAME(T, T &&), "Type must NOT be a reference");
     static_assert(requires(const T &v) { T(v); }, "Type must be copy-constructible");
     static_assert(requires(const T &v, T u) { u = v; }, "Type must be copy-assignable");
     static_assert(requires(T &&v) { T(v); }, "Type must be move-constructible");
@@ -1394,33 +1404,33 @@ namespace satomi
     constexpr atomic() noexcept = default;
     constexpr atomic(T value) noexcept : object{ value } { }
     
+    constexpr atomic(const atomic &) noexcept = delete;
     constexpr atomic(atomic &&) noexcept = delete;
-    constexpr atomic(const atomic &) = delete;
     constexpr atomic &operator=(const atomic &) = delete;
     constexpr atomic &operator=(atomic &&) noexcept = delete;
-    
-    template<memory_order order = memory_order_seq_cst>
-    constexpr void store(T desired) noexcept { atomic_store<order>(object, desired); }
 
     template<memory_order order = memory_order_seq_cst>
-    constexpr T load() const noexcept { return atomic_load<order>(object); }    
+    constexpr void store(T desired) noexcept { atomic_store<order>(*object, desired); }
 
     template<memory_order order = memory_order_seq_cst>
-    constexpr T exchange(T desired) noexcept { return atomic_exchange<order>(object, desired); }
+    constexpr T load() const noexcept { return atomic_load<order>(*object); }    
+
+    template<memory_order order = memory_order_seq_cst>
+    constexpr T exchange(T desired) noexcept { return atomic_exchange<order>(*object, desired); }
 
     template<memory_order order = memory_order_seq_cst>
     constexpr bool compare_exchange_strong(T &expected, T desired) noexcept 
-    { return atomic_compare_exchange_strong<order>(object, expected, desired); }
+    { return atomic_compare_exchange_strong<order>(*object, expected, desired); }
 
     template<memory_order order = memory_order_seq_cst>
     constexpr bool compare_exchange_weak(T &expected, T desired) noexcept 
-    { return atomic_compare_exchange_weak<order>(object, expected, desired); }
+    { return atomic_compare_exchange_weak<order>(*object, expected, desired); }
 
     template<memory_order order = memory_order_seq_cst> requires is_integral || is_floating_point
     constexpr T fetch_add(T operand) noexcept
     {
       if constexpr (is_integral)
-        return atomic_fetch_add<order>(object, operand);
+        return atomic_fetch_add<order>(*object, operand);
       else
       {
         auto current = load<order>();
@@ -1431,39 +1441,58 @@ namespace satomi
 
     template<memory_order order = memory_order_seq_cst> requires is_pointer
     constexpr T fetch_add(detail::ptrdiff_t operand) noexcept
-    { return atomic_fetch_add<order>(object, operand); }    
+    { return atomic_fetch_add<order>(*object, operand); }    
 
     template<memory_order order = memory_order_seq_cst> requires is_integral || is_floating_point
-    constexpr T fetch_sub(T operand) noexcept { return atomic_fetch_add<order>(object, (T)(-operand)); }
+    constexpr T fetch_sub(T operand) noexcept { return atomic_fetch_add<order>(*object, (T)(-operand)); }
 
     template<memory_order order = memory_order_seq_cst> requires is_pointer
     constexpr T fetch_sub(detail::ptrdiff_t operand) noexcept { return fetch_add<order>(-operand); }    
 
     template<memory_order order = memory_order_seq_cst> requires is_integral
-    constexpr T fetch_and(T operand) noexcept { return atomic_fetch_and<order>(object, operand); }
+    constexpr T fetch_and(T operand) noexcept { return atomic_fetch_and<order>(*object, operand); }
 
     template<memory_order order = memory_order_seq_cst> requires is_integral
-    constexpr T fetch_or(T operand) noexcept { return atomic_fetch_or<order>(object, operand); }
+    constexpr T fetch_or(T operand) noexcept { return atomic_fetch_or<order>(*object, operand); }
 
     template<memory_order order = memory_order_seq_cst> requires is_integral
-    constexpr T fetch_xor(T operand) noexcept { return atomic_fetch_xor<order>(object, operand); }
+    constexpr T fetch_xor(T operand) noexcept { return atomic_fetch_xor<order>(*object, operand); }
 
     template<memory_order order = memory_order_seq_cst>
-    constexpr T wait(T old) noexcept { return atomic_wait<order>(object, old); }
-    constexpr void notify_one() noexcept { atomic_notify_one(object); }
-    constexpr void notify_all() noexcept { atomic_notify_all(object); }
+    constexpr T wait(T old) noexcept { return atomic_wait<order>(*object, old); }
+    constexpr void notify_one() noexcept { atomic_notify_one(*object); }
+    constexpr void notify_all() noexcept { atomic_notify_all(*object); }
 
-  private:
-    alignas(sizeof(T)) T object{};
+  protected:
+    storage_type object{};
   };
 
+  template<typename T>
+  class atomic_ref : public atomic<T, false>
+  {
+  public:
+  #ifdef __GNUC__
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wextra"
+    // base class should be explicitly initialized in the copy constructor
+  #endif
+
+    constexpr atomic_ref(const atomic_ref &other) noexcept { atomic<T, false>::object = other.object; }
+
+  #ifdef __GNUC__
+    #pragma GCC diagnostic pop
+  #endif 
+
+    explicit constexpr atomic_ref(T &reference) noexcept { atomic<T, false>::object = &reference; }
+    constexpr T *address() const noexcept { return atomic<T, false>::object; }
+  };
 }
 
 #if defined(_MSC_VER) && ! (__clang__)
   #pragma warning(pop)
 #endif
 
-#undef SATOMI_IS_SAME_HELPER
+#undef SATOMI_IS_SAME
 #undef SATOMI_IS_CONSTANT_EVALUATED
 #undef SATOMI_BIT_CAST
 #undef SATOMI_IS_ATOMIC_READY
