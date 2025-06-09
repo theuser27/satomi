@@ -10,11 +10,6 @@
     #pragma comment(lib, "Synchronization.lib")
   }
 #elif defined(LINUX) || defined(__linux__)
-  #include <errno.h>
-  #include <sys/syscall.h>
-
-  extern "C" long syscall(long number, ...);
-
   #if !defined(__x86_64__) && !defined(__aarch64__)
     #error Unsupported processor
   #endif
@@ -1173,6 +1168,45 @@ namespace satomi
   #endif
   }
 
+  #if (defined (LINUX) || defined (__linux__)) && defined(__x86_64__)
+
+    #define SATOMI_SYS_FUTEX 202
+    #define SATOMI_WAKE_SYSCALL(address, waiters_to_wake_up)         \
+      __asm__ __volatile__                                           \
+      (                                                              \
+        "mov %[syscall_number], %%rax\n\t"                           \
+        "mov %[a], %%rdi\n\t"                                        \
+        "mov %[futex_op], %%rsi\n\t"                                 \
+        "mov %[count], %%edx\n\t"                                    \
+        "syscall\n\t"                                                \
+        :                                                            \
+        : [syscall_number] "Z" (SATOMI_SYS_FUTEX), [a] "r" (address),\
+          [futex_op] "Z" (1 /*wake op*/ | 128 /*private flag*/),     \
+          [count] "r" (waiters_to_wake_up)                           \
+        : "rax", "rdi", "rsi", "rdx", "r10"                          \
+      );
+
+  #elif (defined (LINUX) || defined (__linux__)) && defined(__aarch64__)
+
+    #define SATOMI_SYS_FUTEX 98
+    #define SATOMI_WAKE_SYSCALL(address, waiters_to_wake_up)         \
+      __asm__ __volatile__                                           \
+      (                                                              \
+        "mov w8, %x[syscall_number]\n\t"                             \
+        "mov x0, %x[a]\n\t"                                          \
+        "mov x1, %x[futex_op]\n\t"                                   \
+        "mov w2, %w[count]\n\t"                                      \
+        "sxtw x2, w2\n\t"                                            \
+        "svc #0\n\t"                                                 \
+        :                                                            \
+        : [syscall_number] "M" (SATOMI_SYS_FUTEX), [a] "r" (address),\
+          [futex_op] "N" (1 /*wake op*/ | 128 /*private flag*/),     \
+          [count] "r" (waiters_to_wake_up)                           \
+        : "w8", "x0", "x1", "x2"                                     \
+      );
+
+  #endif
+
   template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
   constexpr T atomic_wait(volatile T &object, T old)
   {
@@ -1241,18 +1275,18 @@ namespace satomi
     auto &slot = detail::get_waiting_slot(&object);
     (void)__atomic_fetch_add(&slot.wait_count, 1, __ATOMIC_SEQ_CST);
 
-    int *waited_address = nullptr;
+    int *address = nullptr;
     int compare;
 
     if (sizeof(T) >= sizeof(detail::waiting_slot::version) && 
       (((__UINTPTR_TYPE__)&object) % sizeof(int)) == 0)
     {
-      waited_address = (int *)&object;
+      address = (int *)&object;
       __builtin_memcpy(&compare, &old, sizeof(compare));
     }
     else
     {
-      waited_address = &slot.version;
+      address = &slot.version;
       compare = __atomic_load_n(&slot.version, __ATOMIC_RELAXED);
     }
 
@@ -1260,11 +1294,50 @@ namespace satomi
     {
       if (short_spin())
         break;
-      
-      auto result = syscall(SYS_futex, waited_address, 
-        0 /*wait op*/ | 128 /*private flag*/, compare, nullptr);
 
-      if (!result && errno != EINTR)
+      __INT64_TYPE__ result;
+      #define SATOMI_WAIT_OP (0 /*wait op*/ | 128 /*private flag*/)
+      
+    #if defined(__x86_64__)
+
+      __asm__ __volatile__
+      (
+        "mov %[syscall_number], %%rax\n\t"
+        "mov %[address], %%rdi\n\t"
+        "mov %[futex_op], %%rsi\n\t"
+        "mov %[compare], %%edx\n\t"
+        "mov %[timeout], %%r10\n\t"
+        "syscall\n\t"
+        "mov %%rax, %[result]"
+        : [result] "=r" (result)
+        : [syscall_number] "Z" (SATOMI_SYS_FUTEX), [address] "r" (address), 
+          [futex_op] "Z" (SATOMI_WAIT_OP), [compare] "r" (compare), [timeout] "Z" (nullptr)
+        : "rax", "rdi", "rsi", "rdx", "r10"
+      );
+
+    #elif defined(__aarch64__)
+
+      __asm__ __volatile__
+      (
+        "mov w8, %x[syscall_number]\n\t"
+        "mov x0, %x[address]\n\t"
+        "mov x1, %x[futex_op]\n\t"
+        "mov w2, %w[compare]\n\t"
+        "sxtw x2, w2\n\t"
+        "mov x3, %x[timeout]\n\t"
+        "svc #0\n\t"
+        "mov %x[result], x0"
+        : [result] "=r" (result)
+        : [syscall_number] "M" (SATOMI_SYS_FUTEX), [address] "r" (address), 
+          [futex_op] "N" (SATOMI_WAIT_OP), [compare] "r" (compare), [timeout] "N" (nullptr)
+        : "w8", "x0", "x1", "x2", "x3"
+      );
+
+    #endif
+      
+      #undef SATOMI_WAIT_OP
+
+      if (!result && (-result) != 11 /*EAGAIN*/)
         __builtin_trap();
       
       current = atomic_load<order>(object);
@@ -1297,23 +1370,22 @@ namespace satomi
     if (!is_anyone_waiting)
       return;
 
-    int *waited_address = nullptr;
-    bool wake_all = false;
+    int *address = nullptr;
+    int waiters_to_wake_up = 1;
 
     if (sizeof(T) >= sizeof(detail::waiting_slot::version) && 
       (((__UINTPTR_TYPE__)&object) % sizeof(int)) == 0)
     {
-      waited_address = (int *)&object;
+      address = (int *)&object;
     }
     else
     {
       (void)__atomic_fetch_add(&slot.version, 1, __ATOMIC_SEQ_CST);
-      wake_all = true;
-      waited_address = &slot.version;
+      waiters_to_wake_up = __INT_MAX__;
+      address = &slot.version;
     }
 
-    syscall(SYS_futex, waited_address, 1 /*wake op*/ | 128 /*private flag*/,
-      wake_all ? __INT_MAX__ : 1);
+    SATOMI_WAKE_SYSCALL(address, waiters_to_wake_up)
 
   #elif defined (__APPLE_CPP__) || defined (__APPLE_CC__)
 
@@ -1338,20 +1410,25 @@ namespace satomi
     if (!is_anyone_waiting)
         return;
 
-    int *waited_address = nullptr;
+    int *address = nullptr;
 
     if (sizeof(T) >= sizeof(detail::waiting_slot::version) && 
       (((__UINTPTR_TYPE__)&object) % sizeof(int)) == 0)
     {
-      waited_address = (int *)&object;
+      address = (int *)&object;
     }
     else
     {
       (void)__atomic_fetch_add(&slot.version, 1, __ATOMIC_SEQ_CST);
-      waited_address = &slot.version;
+      address = &slot.version;
     }
 
-    syscall(SYS_futex, waited_address, 1 /*wake op*/ | 128 /*private flag*/, __INT_MAX__);
+    int waiters_to_wake_up = __INT_MAX__;
+
+    SATOMI_WAKE_SYSCALL(address, waiters_to_wake_up)
+
+    #undef SATOMI_WAKE_SYSCALL
+    #undef SATOMI_SYS_FUTEX
 
   #elif defined (__APPLE_CPP__) || defined (__APPLE_CC__)
 
