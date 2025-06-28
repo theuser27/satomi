@@ -4,7 +4,7 @@
 Completely lock-less constexpr C++20 header replacement for `<atomic>` 
 
 ## Why does this exist?
-TL;DR: portable lock-less 16 byte atomics don't exist at the time of writing. 
+TL;DR: portable lock-less 16 byte atomics don't exist (with the exception of [boost.atomic](https://github.com/boostorg/atomic)) at the time of writing.
 
 Every compiler has a different opinion on lock-less 16 byte atomics and they rarely align with the others. From the big 3: 
  - Clang supports them but they are hidden behind a compiler flag (`-mcx16`), 
@@ -17,7 +17,7 @@ This library was created to unify behaviours across compilers, while being simpl
 
 ---
 
-If you already know how to use atomics, the API should look familiar. There are however slight differences (+ some opinions on how atomics should be used). 
+If you already know how to use atomics, the API should look familiar. There are however slight differences (+ some opinions on how atomics should be used).
 
 1. Memory ordering is passed as a template parameter to avoid unnecessary codegen.
 2. The free functions take regular `T &` instead of `std::atomic<T> *` 
@@ -26,7 +26,7 @@ If you already know how to use atomics, the API should look familiar. There are 
 ## Warnings and Caveats
 1. Only x86_64 and arm64 are supported for now.
 2. On macOS wait and notify_one/notify_all functions are not implemented yet.
-3. Currently only objects with power-of-2 sizes are supported where padding bits **WILL** participate in CAS operations (would like to change this in the future).
+3. Currently only objects with power-of-2 sizes are supported.
 4. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks (might change this in the future).
 5. When using the free functions or atomic_ref to do atomic operations you have to make sure your variables are properly aligned to their own size (meaning `address of object` % `size of object` == 0)[^1]. If alignment isn't honoured the functions WILL abort the program because you will get UB otherwise.
 6. On linux this library currently depends on libc for atomic intrisincs for <= 8 bytes, which are universally lock-less (will most likely change this in the future).

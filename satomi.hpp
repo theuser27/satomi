@@ -27,6 +27,7 @@
   ((sizeof(T) & (sizeof(T) - 1)) == 0)
 // safely reinterpreting arbitrary types to integrals (padding bits are NOT taken into account)
 #define SATOMI_BIT_CAST(To, value) __builtin_bit_cast(To, value)
+#define SATOMI_HAS_PADDING_BITS(T) !__has_unique_object_representations(T) && !detail::type_list<float, double, long double>::any_of<T>()
 // adding simple constexpr support for operations
 #define SATOMI_IS_CONSTANT_EVALUATED() __builtin_is_constant_evaluated()
 
@@ -42,6 +43,7 @@ extern "C"
   #define SATOMI_COMPILER_BARRIER() _Pragma("warning(push)") _Pragma("warning(disable : 4996)") _ReadWriteBarrier() _Pragma("warning(pop)")
   [[noreturn]] void __fastfail(unsigned int code);
   #define SATOMI_CHECK_ALIGNMENT(alignment, x) (void)((decltype(sizeof(int))(&x) % alignment) == 0 || (__fastfail(/*FAST_FAIL_FATAL_APP_EXIT*/ 7), true))
+  #define SATOMI_CLEAR_PADDING_BITS(x) __builtin_zero_non_value_bits(x)
 
   #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
 
@@ -114,6 +116,16 @@ extern "C"
 #else
 
   static_assert(sizeof(__UINT64_TYPE__) == sizeof(void *));
+
+  // currently clang doesn't implement either functions
+  // but when/if it decides to it can choose
+  #if __has_builtin(__builtin_clear_padding)
+    #define SATOMI_CLEAR_PADDING_BITS(x) __builtin_clear_padding(x)
+  #elif __has_builtin(__builtin_clear_padding)
+    #define SATOMI_CLEAR_PADDING_BITS(x) __builtin_zero_non_value_bits(x)
+  #else
+    #define SATOMI_CLEAR_PADDING_BITS(x) (void)(x)
+  #endif
 
   #define SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)\
     if constexpr (order == memory_order_relaxed) { SATOMI_ATOMIC_ASM("", "") } \
@@ -203,6 +215,9 @@ namespace satomi
     }
 
     SATOMI_CHECK_ALIGNMENT(sizeof(T), object);
+
+    if constexpr (SATOMI_HAS_PADDING_BITS(T))
+      SATOMI_CLEAR_PADDING_BITS(&object);
 
   #if defined(_MSC_VER) && ! (__clang__)
 
@@ -337,6 +352,8 @@ namespace satomi
     return atomic_compare_exchange_strong<order>(object, expected, desired);
 
   #else
+    if constexpr (SATOMI_HAS_PADDING_BITS(T))
+      SATOMI_CLEAR_PADDING_BITS(&object);
 
     #define SATOMI_ATOMIC_OP(INT) return __atomic_compare_exchange_n((volatile INT *)&object, (INT *)&expected, SATOMI_BIT_CAST(INT, desired),\
       1, int(order), int(order == memory_order_acq_rel || order == memory_order_seq_cst ? memory_order_acquire : memory_order_relaxed));
@@ -396,6 +413,9 @@ namespace satomi
     }
 
     SATOMI_CHECK_ALIGNMENT(sizeof(T), object);
+
+    if constexpr (SATOMI_HAS_PADDING_BITS(T))
+      SATOMI_CLEAR_PADDING_BITS(&object);
 
   #if defined(_MSC_VER) && ! (__clang__)
 
@@ -644,6 +664,9 @@ namespace satomi
 
     SATOMI_CHECK_ALIGNMENT(sizeof(T), object);    
 
+    if constexpr (SATOMI_HAS_PADDING_BITS(T))
+      SATOMI_CLEAR_PADDING_BITS(&object);
+
   #if defined(_MSC_VER) && ! (__clang__)
 
   #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
@@ -671,7 +694,11 @@ namespace satomi
     else if constexpr (sizeof(T) == 2) { SATOMI_DEFINE_STORE_MEMORY_ORDERS(16, 16) }
     else if constexpr (sizeof(T) == 4) { SATOMI_DEFINE_STORE_MEMORY_ORDERS(32, , (volatile long *)) } // stupid cast for a stupid company
     else if constexpr (sizeof(T) == 8) { SATOMI_DEFINE_STORE_MEMORY_ORDERS(64, 64) }
-    else if constexpr (sizeof(T) == 16) { (void)atomic_exchange(object, value); }
+    else if constexpr (sizeof(T) == 16)
+    {
+      T result = value;
+      while (!atomic_compare_exchange_strong<order>(object, result, value)) {}
+    }
 
   #undef SATOMI_DEFINE_STORE_MEMORY_ORDERS
   #undef SATOMI_SEQ_CST_STORE
@@ -1215,8 +1242,8 @@ namespace satomi
 
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
-      T current = atomic_load<order>(object);
-      while (current == old) { current = atomic_load<order>(object); }
+      T current = const_cast<T &>(object);
+      while (current == old) { current = const_cast<T &>(object); }
       return current;
     }
 
@@ -1435,8 +1462,9 @@ namespace satomi
   #endif
   }
 
-  #define SATOMI_CONDITIONAL(Test, True, False) decltype([](True *t___, False *f___) { if constexpr (Test) return *t___; else return *f___; }(nullptr, nullptr))
-
+  #define SATOMI_CONDITIONAL(Test, True, False) decltype([]([[maybe_unused]] True *t___, \
+    [[maybe_unused]] False *f___) { if constexpr (Test) return *t___; else return *f___; }(nullptr, nullptr))
+  
   template<typename T, bool owns_data = true>
   class atomic
   {
@@ -1479,7 +1507,11 @@ namespace satomi
 
   public:
     constexpr atomic() noexcept = default;
-    constexpr atomic(T value) noexcept : object{ value } { }
+    constexpr atomic(T value) noexcept : object{ value }
+    {
+      if constexpr (SATOMI_HAS_PADDING_BITS(T))
+        SATOMI_CLEAR_PADDING_BITS(&object);
+    }
     
     constexpr atomic(const atomic &) noexcept = delete;
     constexpr atomic(atomic &&) noexcept = delete;
@@ -1569,6 +1601,8 @@ namespace satomi
   #pragma warning(pop)
 #endif
 
+#undef SATOMI_IS_POINTER
+#undef SATOMI_CONDITIONAL
 #undef SATOMI_IS_SAME
 #undef SATOMI_IS_CONSTANT_EVALUATED
 #undef SATOMI_BIT_CAST
@@ -1579,5 +1613,7 @@ namespace satomi
 #undef SATOMI_CHOOSE_SIZE
 #undef SATOMI_COMPILER_OR_MEMORY_BARRIER
 #undef SATOMI_COMPILER_BARRIER
+#undef SATOMI_HAS_PADDING_BITS
+#undef SATOMI_CLEAR_PADDING_BITS
 
 #endif
