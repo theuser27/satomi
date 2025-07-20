@@ -166,6 +166,13 @@ namespace satomi
       static constexpr bool any_of() noexcept { return ((type_list<T>{} == type_list<Ts>{}) || ...); }
     };
 
+    template<typename T> struct remove_reference
+    { static constexpr bool is_ref = false; static constexpr bool is_lvalue_or_rvalue_ref = false; using type = T; };
+    template<typename T> struct remove_reference<T &>
+    { static constexpr bool is_ref = true; static constexpr bool is_lvalue_or_rvalue_ref = false; using type = T; };
+    template<typename T> struct remove_reference<T &&>
+    { static constexpr bool is_ref = true; static constexpr bool is_lvalue_or_rvalue_ref = true; using type = T; };
+
     template<typename T>
     inline constexpr bool is_trivially_copyable = __is_trivially_copyable(T);
 
@@ -1465,9 +1472,11 @@ namespace satomi
   #define SATOMI_CONDITIONAL(Test, True, False) decltype([]([[maybe_unused]] True *t___, \
     [[maybe_unused]] False *f___) { if constexpr (Test) return *t___; else return *f___; }(nullptr, nullptr))
   
-  template<typename T, bool owns_data = true>
+  template<typename U>
   class atomic
   {
+    using T = typename detail::remove_reference<U>::type;
+    static constexpr bool owns_data = !detail::remove_reference<U>::is_ref;
     struct data_holder
     {
       alignas(sizeof(T)) T object{};
@@ -1478,7 +1487,6 @@ namespace satomi
 
     static_assert(__is_trivially_copyable(T), "Type must be trivially copyable");
     static_assert(!SATOMI_IS_SAME(T, const T) && !SATOMI_IS_SAME(T, volatile T), "Type must NOT be const or volatile");
-    static_assert(!SATOMI_IS_SAME(T, T &) && !SATOMI_IS_SAME(T, T &&), "Type must NOT be a reference");
     static_assert(requires(const T &v) { T(v); }, "Type must be copy-constructible");
     static_assert(requires(const T &v, T u) { u = v; }, "Type must be copy-assignable");
     static_assert(requires(T &&v) { T(v); }, "Type must be move-constructible");
@@ -1507,16 +1515,17 @@ namespace satomi
 
   public:
     constexpr atomic() noexcept = default;
-    constexpr atomic(T value) noexcept : object{ value }
+    constexpr atomic(T value) noexcept requires owns_data : object{ value }
     {
       if constexpr (SATOMI_HAS_PADDING_BITS(T))
         SATOMI_CLEAR_PADDING_BITS(&object);
     }
+    explicit constexpr atomic(T &reference) noexcept requires (!owns_data) { object = &reference; }
     
-    constexpr atomic(const atomic &) noexcept = delete;
-    constexpr atomic(atomic &&) noexcept = delete;
-    constexpr atomic &operator=(const atomic &) = delete;
-    constexpr atomic &operator=(atomic &&) noexcept = delete;
+    constexpr atomic(const atomic &) noexcept requires (!owns_data) = default;
+    constexpr atomic(atomic &&) noexcept requires (!owns_data) = default;
+    constexpr atomic &operator=(const atomic &) requires (!owns_data) = default;
+    constexpr atomic &operator=(atomic &&) noexcept requires (!owns_data) = default;
 
     template<memory_order order = memory_order_seq_cst>
     constexpr void store(T desired) noexcept { atomic_store<order>(*object, desired); }
@@ -1572,29 +1581,17 @@ namespace satomi
     constexpr void notify_one() noexcept { atomic_notify_one(*object); }
     constexpr void notify_all() noexcept { atomic_notify_all(*object); }
 
+    constexpr T *address() const noexcept requires (!owns_data) { return object; }
+
   protected:
     storage_type object{};
   };
 
   template<typename T>
-  class atomic_ref : public atomic<T, false>
-  {
-  public:
-  #ifdef __GNUC__
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wextra"
-    // base class should be explicitly initialized in the copy constructor
-  #endif
+  atomic(T) -> atomic<T>;
 
-    constexpr atomic_ref(const atomic_ref &other) noexcept { atomic<T, false>::object = other.object; }
-
-  #ifdef __GNUC__
-    #pragma GCC diagnostic pop
-  #endif 
-
-    explicit constexpr atomic_ref(T &reference) noexcept { atomic<T, false>::object = &reference; }
-    constexpr T *address() const noexcept { return atomic<T, false>::object; }
-  };
+  template<typename T>
+  using atomic_ref = atomic<T &>;
 }
 
 #if defined(_MSC_VER) && ! (__clang__)
