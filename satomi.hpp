@@ -262,7 +262,7 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 16)
     {
-      struct int128__ { __int64 v[2]; } d;
+      struct alignas(16) int128__ { __int64 v[2]; } d;
       
       d = SATOMI_BIT_CAST(int128__, desired);
 
@@ -285,7 +285,7 @@ namespace satomi
     {
     #if defined (__x86_64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; };
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; };
       auto e = SATOMI_BIT_CAST(uint128__, expected);
       auto d = SATOMI_BIT_CAST(uint128__, desired);
 
@@ -302,7 +302,7 @@ namespace satomi
 
     #elif defined (__aarch64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } original;
       auto d = SATOMI_BIT_CAST(uint128__, desired);
       auto e = SATOMI_BIT_CAST(uint128__, expected);
       bool success;
@@ -373,7 +373,7 @@ namespace satomi
       return atomic_compare_exchange_strong<order>(object, expected, desired);
     #elif defined(__aarch64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } original;
       auto d = SATOMI_BIT_CAST(uint128__, desired);
       auto e = SATOMI_BIT_CAST(uint128__, expected);
       bool success;
@@ -468,7 +468,7 @@ namespace satomi
       // shamelessly stolen from boost.atomic
     #if defined (__x86_64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } old;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } old;
       auto d = SATOMI_BIT_CAST(uint128__, value);
 
       __asm__ __volatile__
@@ -489,7 +489,7 @@ namespace satomi
 
     #elif defined (__aarch64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } original;
       auto v = SATOMI_BIT_CAST(uint128__, value);
       unsigned int success;
       
@@ -572,7 +572,7 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 16)
     {
-      struct int128__ { __int64 v[2]{}; } v{};
+      struct alignas(16) int128__ { __int64 v[2]{}; } v{};
 
       SATOMI_CHOOSE_MEMORY_ORDER(order, (void)_InterlockedCompareExchange128, ((volatile __int64 *)&object, 0, 0, v.v))
       
@@ -610,7 +610,7 @@ namespace satomi
 
       #endif
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } v;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } v;
 
       __asm__ __volatile__
       (
@@ -627,7 +627,7 @@ namespace satomi
 
     #elif defined(__aarch64__)
         
-      struct uint128__ { __UINT64_TYPE__ v[2]; } value;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } value;
       unsigned success;
 
       #define SATOMI_DEFINE_LOAD_MEMORY_ORDERS(acquire_order)            \
@@ -758,7 +758,7 @@ namespace satomi
 
     #elif defined(__aarch64__)
         
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } original;
       auto v = SATOMI_BIT_CAST(uint128__, value);
       unsigned success;
 
@@ -855,7 +855,7 @@ namespace satomi
 
       #endif
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original, result;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } original, result;
       auto o = SATOMI_BIT_CAST(uint128__, operand);
       unsigned success;
 
@@ -995,7 +995,7 @@ namespace satomi
 
     #elif defined(__aarch64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original, result;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } original, result;
       auto o = SATOMI_BIT_CAST(uint128__, operand);
       unsigned success;
 
@@ -1081,7 +1081,7 @@ namespace satomi
 
     #elif defined(__aarch64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original, result;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } original, result;
       auto o = SATOMI_BIT_CAST(uint128__, operand);
       unsigned success;
 
@@ -1166,7 +1166,7 @@ namespace satomi
 
     #elif defined(__aarch64__)
 
-      struct uint128__ { __UINT64_TYPE__ v[2]; } original, result;
+      struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } original, result;
       auto o = SATOMI_BIT_CAST(uint128__, operand);
       unsigned success;
 
@@ -1253,6 +1253,8 @@ namespace satomi
       while (current == old) { current = const_cast<T &>(object); }
       return current;
     }
+    
+    static_assert(sizeof(T) <= 16, "We can't handle object larger than 16 bytes");
 
   #if defined (_WIN64)
 
@@ -1275,11 +1277,6 @@ namespace satomi
         value = atomic_load<order>(object);
       }
       return value;
-    }
-    else
-    {
-      // we don't handle anything above 16 bytes
-      __fastfail(/*FAST_FAIL_FATAL_APP_EXIT*/ 7);
     }
 
   #elif defined (LINUX) || defined (__linux__)
