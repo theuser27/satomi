@@ -25,11 +25,10 @@ If you already know how to use atomics, the API should look familiar. There are 
 
 ## Warnings and Caveats
 1. Only x86_64 and arm64 are supported for now.
-2. On macOS wait and notify_one/notify_all functions are not implemented yet.
-3. Currently only objects with power-of-2 sizes are supported.
-4. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks (might change this in the future).
-5. When using the free functions or atomic_ref to do atomic operations you have to make sure your variables are properly aligned to their own size (meaning `address of object` % `size of object` == 0)[^1]. If alignment isn't honoured the functions WILL abort the program because you will get UB otherwise.
-6. On linux this library currently depends on libc for atomic intrisincs for <= 8 bytes, which are universally lock-less (will most likely change this in the future).
+2. Currently only objects with power-of-2 sizes are supported.
+3. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks (might change this in the future).
+4. When using the free functions or atomic_ref to do atomic operations you have to make sure your variables are properly aligned to their own size (meaning `address of object` % `size of object` == 0)[^1]. If alignment isn't honoured the functions WILL abort the program because you will get UB otherwise.
+5. On linux this library currently depends on libc for atomic intrisincs for <= 8 bytes, which are universally lock-less (will most likely change this in the future).
 
 [^1]: Technically 16 byte atomics only need to be 8 byte aligned to work though.
 

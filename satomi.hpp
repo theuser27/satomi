@@ -2,6 +2,7 @@
 #define SATOMI_HPP
 
 #if defined(_WIN64)
+
   extern "C"
   {
     int __stdcall WaitOnAddress(volatile void *Address, void *CompareAddress, unsigned __int64 AddressSize, unsigned long dwMilliseconds);
@@ -9,16 +10,36 @@
     void __stdcall WakeByAddressAll(void *Address);
     #pragma comment(lib, "Synchronization.lib")
   }
+
 #elif defined(LINUX) || defined(__linux__)
+
   #if !defined(__x86_64__) && !defined(__aarch64__)
     #error Unsupported processor
   #endif
-#elif defined (__APPLE_CPP__) || defined (__APPLE_CC__)
+
+#elif defined (__APPLE__)
+
   #if !defined(__x86_64__) && !defined(__aarch64__)
     #error Unsupported processor
   #endif
+
+  // private macOS api (Darwin 16, macOS 10.12), needs to be weakly linked or have used dlsym to use
+  // https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/ulock.h#L68
+  // for more info:
+  // https://shift.click/blog/futex-like-apis/#darwin-macos-ios-tvos-watchos-and-more
+  // https://github.com/llvm/llvm-project/blob/dc3ae608e95a62e0a4a2532d87bf34ce7c9714ef/libcxx/src/atomic.cpp#L82
+  #define SATOMI_UL_COMPARE_AND_WAIT 1
+  #define SATOMI_ULF_WAKE_ALL        0x00000100
+  extern "C"
+  {
+    int __ulock_wait(__UINT32_TYPE__ operation, void *addr, __UINT64_TYPE__ value, __UINT32_TYPE__ timeout) __attribute__((weak_import));
+    int __ulock_wake(__UINT32_TYPE__ operation, void *addr, __UINT64_TYPE__ wake_value) __attribute__((weak_import));
+  }
+
 #else
+
   #error Unsupported platform
+
 #endif
 
 // trivially copyable && copy/move constructible/assignable and size must be a power-of-2
@@ -178,20 +199,22 @@ namespace satomi
 
     using ptrdiff_t = decltype(static_cast<int *>(nullptr) - static_cast<int *>(nullptr));
 
-  #if defined (LINUX) || defined(__linux__)
+  #if defined (LINUX) || defined(__linux__) || defined(__APPLE__)
 
-    struct waiting_slot
+    // align(64) to avoid false sharing between slots
+    struct alignas(64) waiting_slot
     {
       int wait_count = 0;
       int version = 0;
     };
 
-    #define SATOMI_WAITING_LIST_COUNT 32
-    constinit waiting_slot waiter_list[SATOMI_WAITING_LIST_COUNT]{};
+    #define SATOMI_WAITING_LIST_COUNT (1 << 7)
+    inline constinit waiting_slot waiter_list[SATOMI_WAITING_LIST_COUNT]{};
 
-    inline waiting_slot &get_waiting_slot(const volatile void* address)
+    inline waiting_slot &get_waiting_slot(const volatile void *address)
     {
-      auto key = ((__UINTPTR_TYPE__)address >> 2) % SATOMI_WAITING_LIST_COUNT;
+      // shift right by 2 because of 4 byte int alignment
+      auto key = ((__UINTPTR_TYPE__)address >> 2) & (SATOMI_WAITING_LIST_COUNT - 1);
       return waiter_list[key];
     }
     #undef SATOMI_WAITING_LIST_COUNT
@@ -224,7 +247,7 @@ namespace satomi
     SATOMI_CHECK_ALIGNMENT(sizeof(T), object);
 
     if constexpr (SATOMI_HAS_PADDING_BITS(T))
-      SATOMI_CLEAR_PADDING_BITS(&object);
+      SATOMI_CLEAR_PADDING_BITS(&desired);
 
   #if defined(_MSC_VER) && ! (__clang__)
 
@@ -360,7 +383,7 @@ namespace satomi
 
   #else
     if constexpr (SATOMI_HAS_PADDING_BITS(T))
-      SATOMI_CLEAR_PADDING_BITS(&object);
+      SATOMI_CLEAR_PADDING_BITS(&desired);
 
     #define SATOMI_ATOMIC_OP(INT) return __atomic_compare_exchange_n((volatile INT *)&object, (INT *)&expected, SATOMI_BIT_CAST(INT, desired),\
       1, int(order), int(order == memory_order_acq_rel || order == memory_order_seq_cst ? memory_order_acquire : memory_order_relaxed));
@@ -422,7 +445,7 @@ namespace satomi
     SATOMI_CHECK_ALIGNMENT(sizeof(T), object);
 
     if constexpr (SATOMI_HAS_PADDING_BITS(T))
-      SATOMI_CLEAR_PADDING_BITS(&object);
+      SATOMI_CLEAR_PADDING_BITS(&value);
 
   #if defined(_MSC_VER) && ! (__clang__)
 
@@ -672,7 +695,7 @@ namespace satomi
     SATOMI_CHECK_ALIGNMENT(sizeof(T), object);    
 
     if constexpr (SATOMI_HAS_PADDING_BITS(T))
-      SATOMI_CLEAR_PADDING_BITS(&object);
+      SATOMI_CLEAR_PADDING_BITS(&value);
 
   #if defined(_MSC_VER) && ! (__clang__)
 
@@ -1279,8 +1302,11 @@ namespace satomi
       return value;
     }
 
-  #elif defined (LINUX) || defined (__linux__)
+  #else
+
     // assumes linux has futexes, kernel versions must be >= 2.6.22
+
+    // assumes macOS has __ulock_wait and __ulock_wake, >= Darwin 16 (macOS 10.12)
 
     T current = atomic_load<order>(object);
 
@@ -1294,7 +1320,7 @@ namespace satomi
           return true;
 
       #if defined(__x86_64__)
-        __builtin_ia32_pause();
+        __asm__ __volatile__("pause");
       #elif defined(__aarch64__)
         __asm__ __volatile__("yield");
       #endif
@@ -1325,7 +1351,8 @@ namespace satomi
     {
       if (short_spin())
         break;
-
+    
+    #if defined (LINUX) || defined (__linux__)
       __INT64_TYPE__ result;
       #define SATOMI_WAIT_OP (0 /*wait op*/ | 128 /*private flag*/)
       
@@ -1370,16 +1397,19 @@ namespace satomi
 
       if (!result && (-result) != 11 /*EAGAIN*/)
         __builtin_trap();
-      
+
+    #elif defined (__APPLE__)
+
+      __ulock_wait(SATOMI_UL_COMPARE_AND_WAIT, address, (__UINT64_TYPE__)compare, 0);
+
+    #endif
+
       current = atomic_load<order>(object);
     }
 
     (void)__atomic_fetch_sub(&slot.wait_count, 1, __ATOMIC_RELEASE);
 
     return current;
-
-  #elif defined (__APPLE_CPP__) || defined (__APPLE_CC__)
-
   #endif
   }
 
@@ -1393,8 +1423,11 @@ namespace satomi
 
     WakeByAddressSingle(const_cast<T *>(&object));
 
-  #elif defined (LINUX) || defined (__linux__)
+  #else
+
     // assumes linux has futexes, kernel versions must be >= 2.6.22
+
+    // assumes macOS has __ulock_wait and __ulock_wake, >= Darwin 16 (macOS 10.12)
 
     auto &slot = detail::get_waiting_slot(&object);
     bool is_anyone_waiting = __atomic_load_n(&slot.wait_count, __ATOMIC_RELAXED) != 0;
@@ -1412,13 +1445,22 @@ namespace satomi
     else
     {
       (void)__atomic_fetch_add(&slot.version, 1, __ATOMIC_SEQ_CST);
+      // waking up everyone because a different atomic might have the same hash
+      // so we can't guarantee waking up threads only on OUR atomic with notify_one
       waiters_to_wake_up = __INT_MAX__;
       address = &slot.version;
     }
 
-    SATOMI_WAKE_SYSCALL(address, waiters_to_wake_up)
+    #if defined (LINUX) || defined (__linux__)
 
-  #elif defined (__APPLE_CPP__) || defined (__APPLE_CC__)
+      SATOMI_WAKE_SYSCALL(address, waiters_to_wake_up)
+
+    #elif defined (__APPLE__)
+
+      int extra = waiters_to_wake_up == __INT_MAX__ ? SATOMI_ULF_WAKE_ALL : 0;
+      __ulock_wake(SATOMI_UL_COMPARE_AND_WAIT | extra, address, 0);
+      
+    #endif
 
   #endif
   }
@@ -1433,8 +1475,11 @@ namespace satomi
 
     WakeByAddressAll(const_cast<T *>(&object));
 
-  #elif defined (LINUX) || defined (__linux__)
+  #else
+
     // assumes linux has futexes, kernel versions must be >= 2.6.22
+
+    // assumes macOS has __ulock_wait and __ulock_wake, >= Darwin 16 (macOS 10.12)
 
     auto &slot = detail::get_waiting_slot(&object);
     bool is_anyone_waiting = __atomic_load_n(&slot.wait_count, __ATOMIC_RELAXED) != 0;
@@ -1454,14 +1499,23 @@ namespace satomi
       address = &slot.version;
     }
 
-    int waiters_to_wake_up = __INT_MAX__;
+    #if defined (LINUX) || defined (__linux__)
 
-    SATOMI_WAKE_SYSCALL(address, waiters_to_wake_up)
+      int waiters_to_wake_up = __INT_MAX__;
 
-    #undef SATOMI_WAKE_SYSCALL
-    #undef SATOMI_SYS_FUTEX
+      SATOMI_WAKE_SYSCALL(address, waiters_to_wake_up)
 
-  #elif defined (__APPLE_CPP__) || defined (__APPLE_CC__)
+      #undef SATOMI_WAKE_SYSCALL
+      #undef SATOMI_SYS_FUTEX
+
+    #elif defined (__APPLE__)
+
+      __ulock_wake(SATOMI_UL_COMPARE_AND_WAIT | SATOMI_ULF_WAKE_ALL, address, 0);
+
+      #undef SATOMI_UL_COMPARE_AND_WAIT
+      #undef SATOMI_ULF_WAKE_ALL
+
+    #endif
 
   #endif
   }
