@@ -412,6 +412,8 @@ namespace satomi
         : "b" (d.v[0]), "c" (d.v[1])
         : "cc", "memory"
       );
+
+      expected = SATOMI_BIT_CAST(T, e);
       return success;
 
     #elif defined (__aarch64__)
@@ -443,6 +445,7 @@ namespace satomi
       SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
       #undef SATOMI_ATOMIC_ASM
 
+      expected = SATOMI_BIT_CAST(T, original);
       return success;
 
     #endif
