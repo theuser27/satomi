@@ -1,15 +1,39 @@
+// This is free and unencumbered software released into the public domain.
+
+// Anyone is free to copy, modify, publish, use, compile, sell, or
+// distribute this software, either in source code form or as a compiled
+// binary, for any purpose, commercial or non-commercial, and by any
+// means.
+
+// In jurisdictions that recognize copyright laws, the author or authors
+// of this software dedicate any and all copyright interest in the
+// software to the public domain. We make this dedication for the benefit
+// of the public at large and to the detriment of our heirs and
+// successors. We intend this dedication to be an overt act of
+// relinquishment in perpetuity of all present and future rights to this
+// software under copyright law.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+// IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+// OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+// ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+// OTHER DEALINGS IN THE SOFTWARE.
+
+// For more information, please refer to <https://unlicense.org>
+
 #ifndef SATOMI_HPP
 #define SATOMI_HPP
 
+extern "C"
+{
 #if defined(_WIN64)
 
-  extern "C"
-  {
-    int __stdcall WaitOnAddress(volatile void *Address, void *CompareAddress, unsigned __int64 AddressSize, unsigned long dwMilliseconds);
-    void __stdcall WakeByAddressSingle(void *Address);
-    void __stdcall WakeByAddressAll(void *Address);
-    #pragma comment(lib, "Synchronization.lib")
-  }
+  int __stdcall WaitOnAddress(volatile void *Address, void *CompareAddress, unsigned __int64 AddressSize, unsigned long dwMilliseconds);
+  void __stdcall WakeByAddressSingle(void *Address);
+  void __stdcall WakeByAddressAll(void *Address);
+  #pragma comment(lib, "Synchronization.lib")
 
 #elif defined(LINUX) || defined(__linux__)
 
@@ -30,11 +54,9 @@
   // https://github.com/llvm/llvm-project/blob/dc3ae608e95a62e0a4a2532d87bf34ce7c9714ef/libcxx/src/atomic.cpp#L82
   #define SATOMI_UL_COMPARE_AND_WAIT 1
   #define SATOMI_ULF_WAKE_ALL        0x00000100
-  extern "C"
-  {
-    int __ulock_wait(__UINT32_TYPE__ operation, void *addr, __UINT64_TYPE__ value, __UINT32_TYPE__ timeout) __attribute__((weak_import));
-    int __ulock_wake(__UINT32_TYPE__ operation, void *addr, __UINT64_TYPE__ wake_value) __attribute__((weak_import));
-  }
+
+  int __ulock_wait(__UINT32_TYPE__ operation, void *addr, __UINT64_TYPE__ value, __UINT32_TYPE__ timeout) __attribute__((weak_import));
+  int __ulock_wake(__UINT32_TYPE__ operation, void *addr, __UINT64_TYPE__ wake_value) __attribute__((weak_import));
 
 #else
 
@@ -51,34 +73,38 @@
 #define SATOMI_HAS_PADDING_BITS(T) !__has_unique_object_representations(T) && !detail::type_list<float, double, long double>::any_of<T>()
 // adding simple constexpr support for operations
 #define SATOMI_IS_CONSTANT_EVALUATED() __builtin_is_constant_evaluated()
+#define SATOMI_CHECK_ALIGNMENT(alignment, x) (void)((decltype(sizeof(int))(&x) % alignment) == 0 || (SATOMI_TRAP(), true))
 
 #define SATOMI_IS_SAME(...) detail::type_list<__VA_ARGS__>::all_same()
 #define SATOMI_IS_POINTER(T) requires(T a) { [](auto *){}(a); }
 
-extern "C"
-{
+
 #if defined(_MSC_VER) && ! (__clang__)
 
   void _ReadWriteBarrier(void);
   // pragma to avoid deprecation warnings
   #define SATOMI_COMPILER_BARRIER() _Pragma("warning(push)") _Pragma("warning(disable : 4996)") _ReadWriteBarrier() _Pragma("warning(pop)")
   [[noreturn]] void __fastfail(unsigned int code);
-  #define SATOMI_CHECK_ALIGNMENT(alignment, x) (void)((decltype(sizeof(int))(&x) % alignment) == 0 || (__fastfail(/*FAST_FAIL_FATAL_APP_EXIT*/ 7), true))
+  #pragma intrinsic(__fastfail)
+  #define SATOMI_TRAP() __fastfail(/*FAST_FAIL_FATAL_APP_EXIT*/ 7)
   #define SATOMI_CLEAR_PADDING_BITS(x) __builtin_zero_non_value_bits(x)
+  #define SATOMI_INLINE __forceinline
 
   #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
 
     __int64 __ldrexd(const volatile __int64 *);
     void __dmb(unsigned int _Type);
+    #pragma intrinsic(__dmb)
 
     #define SATOMI_DEFINE_MEMORY_ORDERS(X, args) X args; X##_nf args; X##_acq args; X##_rel args;
     #define SATOMI_CHOOSE_MEMORY_ORDER(order, X, args) \
-      if constexpr (order == memory_order_relaxed) { X##_nf args; } \
-      else if constexpr (order == memory_order_consume || order == memory_order_acquire) { X##_acq args; } \
-      else if constexpr (order == memory_order_release) { X##_rel args; } \
-      else if constexpr (order == memory_order_acq_rel || order == memory_order_seq_cst) { X args; } \
+      if (order == memory_order_relaxed) { X##_nf args; } \
+      else if (order == memory_order_consume || order == memory_order_acquire) { X##_acq args; } \
+      else if (order == memory_order_release) { X##_rel args; } \
+      else if (order == memory_order_acq_rel || order == memory_order_seq_cst) { X args; } \
       else { __fastfail(/*FAST_FAIL_FATAL_APP_EXIT*/ 7); }
     #define SATOMI_COMPILER_OR_MEMORY_BARRIER() __dmb(0xB)
+    #define SATOMI_MEMORY_LOAD_ACQUIRE_BARRIER() __dmb(0x9)
 
   #else
 
@@ -87,6 +113,7 @@ extern "C"
     // x86/x64 hardware only emits memory barriers inside _Interlocked intrinsics
     #define SATOMI_COMPILER_OR_MEMORY_BARRIER() SATOMI_COMPILER_BARRIER()
       
+    long _InterlockedIncrement(long volatile * _Addend);
   #endif
 
   // necessary in order to not inject hidden memory ordering guarantees (like with /volatile:ms) 
@@ -148,18 +175,19 @@ extern "C"
     #define SATOMI_CLEAR_PADDING_BITS(x) (void)(x)
   #endif
 
+  #define SATOMI_INLINE inline __attribute__((always_inline))
+  #define SATOMI_TRAP() __builtin_trap()
   #define SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)\
-    if constexpr (order == memory_order_relaxed) { SATOMI_ATOMIC_ASM("", "") } \
-    else if constexpr (order == memory_order_consume || order == memory_order_acquire) { SATOMI_ATOMIC_ASM("a", "") } \
-    else if constexpr (order == memory_order_release) { SATOMI_ATOMIC_ASM("", "l") } \
-    else if constexpr (order == memory_order_acq_rel || order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("a", "l") } \
+    if (order == memory_order_relaxed) { SATOMI_ATOMIC_ASM("", "") } \
+    else if (order == memory_order_consume || order == memory_order_acquire) { SATOMI_ATOMIC_ASM("a", "") } \
+    else if (order == memory_order_release) { SATOMI_ATOMIC_ASM("", "l") } \
+    else if (order == memory_order_acq_rel || order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("a", "l") } \
     else { __builtin_trap(); }
   #define SATOMI_CHOOSE_SIZE(T, macro)                            \
     if constexpr (sizeof(T) == 1) { macro(__UINT8_TYPE__); }      \
     else if constexpr (sizeof(T) == 2) { macro(__UINT16_TYPE__); }\
     else if constexpr (sizeof(T) == 4) { macro(__UINT32_TYPE__); }\
     else if constexpr (sizeof(T) == 8) { macro(__UINT64_TYPE__); }
-  #define SATOMI_CHECK_ALIGNMENT(alignment, x) (void)((decltype(sizeof(int))(&x) % alignment) == 0 || (__builtin_trap(), true))
 
 #endif
 }
@@ -230,8 +258,70 @@ namespace satomi
   inline constexpr auto memory_order_acq_rel = memory_order::acq_rel;
   inline constexpr auto memory_order_seq_cst = memory_order::seq_cst;
 
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr bool atomic_compare_exchange_strong(volatile T &object, T &expected, T desired)
+  SATOMI_INLINE constexpr void atomic_thread_fence(memory_order order = memory_order_seq_cst)
+  {
+    if (SATOMI_IS_CONSTANT_EVALUATED())
+      return;
+
+  #if defined(_MSC_VER) && ! (__clang__)
+    SATOMI_COMPILER_BARRIER();
+    #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
+      if (order == memory_order_acquire || order == memory_order_consume)
+        SATOMI_MEMORY_LOAD_ACQUIRE_BARRIER();
+      else
+        SATOMI_COMPILER_OR_MEMORY_BARRIER();
+    #else
+      if (order == memory_order_seq_cst)
+      {
+      #pragma warning(push)
+      #pragma warning(disable : 6001)  // "Using uninitialized memory 'guard'"
+      #pragma warning(disable : 28113) // "Accessing a local variable guard via an Interlocked function: This is an unusual
+                                       // usage which could be reconsidered."
+        volatile long guard;
+        (void)_InterlockedIncrement(&guard);
+        SATOMI_COMPILER_BARRIER();
+      #pragma warning(pop)
+      }
+    #endif
+  #else
+    #if defined (__x86_64__)
+      if (order == memory_order_seq_cst)
+      {
+        unsigned char dummy = 0u;
+        __asm__ __volatile__ ("lock; notb %0" : "+m" (dummy) : : "memory");
+      }
+      else if (order != memory_order_relaxed)
+        __asm__ __volatile__ ("" ::: "memory");
+    #else
+      if (order != memory_order_relaxed)
+      {
+        if (order == memory_order_consume || order == memory_order_acquire)
+          __asm__ __volatile__ ("dmb ishld\n\t" ::: "memory");
+        else
+          __asm__ __volatile__ ("dmb ish\n\t" ::: "memory");
+      }
+    #endif
+  #endif
+  }
+
+  SATOMI_INLINE constexpr void atomic_signal_fence(memory_order order = memory_order_seq_cst)
+  {
+    if (SATOMI_IS_CONSTANT_EVALUATED())
+      return;
+  #if defined(_MSC_VER) && ! (__clang__)
+    if (order != memory_order_relaxed)
+      SATOMI_COMPILER_BARRIER();
+  #else
+    if (order != memory_order_relaxed)
+      __asm__ __volatile__ ("" ::: "memory");
+  #endif
+  }
+
+  template<typename T>
+  SATOMI_INLINE constexpr T kill_dependency(T t) noexcept { return t; }
+
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr bool atomic_compare_exchange_strong(volatile T &object, T &expected, T desired, memory_order order = memory_order_seq_cst) noexcept
   {
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -251,9 +341,10 @@ namespace satomi
 
   #if defined(_MSC_VER) && ! (__clang__)
 
+    (void)order;
     if constexpr (sizeof(T) == 1)
     {
-      __int8 ret, d = SATOMI_BIT_CAST(__int8, desired), e = SATOMI_BIT_CAST(__int8, expected);
+      __int8 ret = 0, d = SATOMI_BIT_CAST(__int8, desired), e = SATOMI_BIT_CAST(__int8, expected);
       SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange8, ((volatile __int8 *)&object, d, e))
       if (ret == e) return true;
       expected = SATOMI_BIT_CAST(T, ret);
@@ -261,7 +352,7 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 2)
     {
-      __int16 ret, d = SATOMI_BIT_CAST(__int16, desired), e = SATOMI_BIT_CAST(__int16, expected);
+      __int16 ret = 0, d = SATOMI_BIT_CAST(__int16, desired), e = SATOMI_BIT_CAST(__int16, expected);
       SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange16, ((volatile __int16 *)&object, d, e))
       if (ret == e) return true;
       expected = SATOMI_BIT_CAST(T, ret);
@@ -269,7 +360,7 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 4)
     {
-      __int32 ret, d = SATOMI_BIT_CAST(__int32, desired), e = SATOMI_BIT_CAST(__int32, expected);
+      __int32 ret = 0, d = SATOMI_BIT_CAST(__int32, desired), e = SATOMI_BIT_CAST(__int32, expected);
       SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange, ((volatile long *)&object, d, e))
       if (ret == e) return true;
       expected = SATOMI_BIT_CAST(T, ret);
@@ -277,7 +368,7 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 8)
     {
-      __int64 ret, d = SATOMI_BIT_CAST(__int64, desired), e = SATOMI_BIT_CAST(__int64, expected);
+      __int64 ret = 0, d = SATOMI_BIT_CAST(__int64, desired), e = SATOMI_BIT_CAST(__int64, expected);
       SATOMI_CHOOSE_MEMORY_ORDER(order, ret = _InterlockedCompareExchange64, ((volatile __int64 *)&object, d, e))
       if (ret == e) return true;
       expected = SATOMI_BIT_CAST(T, ret);
@@ -289,7 +380,7 @@ namespace satomi
       
       d = SATOMI_BIT_CAST(int128__, desired);
 
-      unsigned char result;
+      unsigned char result = 0;
       SATOMI_CHOOSE_MEMORY_ORDER(order, result = _InterlockedCompareExchange128, ((volatile __int64 *)&object, 
         d.v[1], d.v[0], (__int64 *)&expected))
       
@@ -299,7 +390,7 @@ namespace satomi
   #else
 
     #define SATOMI_ATOMIC_OP(INT) return __atomic_compare_exchange_n((volatile INT *)&object, (INT *)&expected, SATOMI_BIT_CAST(INT, desired),\
-      0, int(order), int(order == memory_order_acq_rel || order == memory_order_seq_cst ? memory_order_acquire : \
+      0, (int)order, (int)(order == memory_order_acq_rel || order == memory_order_seq_cst ? memory_order_acquire : \
       order == memory_order_release ?  memory_order_relaxed : order));
     SATOMI_CHOOSE_SIZE(T, SATOMI_ATOMIC_OP)
     #undef SATOMI_ATOMIC_OP
@@ -361,8 +452,8 @@ namespace satomi
   }
 
 
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr bool atomic_compare_exchange_weak(volatile T &object, T &expected, T desired)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr bool atomic_compare_exchange_weak(volatile T &object, T &expected, T desired, memory_order order = memory_order_seq_cst) noexcept
   {
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -379,21 +470,21 @@ namespace satomi
 
   #if defined(_MSC_VER) && ! (__clang__)
 
-    return atomic_compare_exchange_strong<order>(object, expected, desired);
+    return atomic_compare_exchange_strong(object, expected, desired, order);
 
   #else
     if constexpr (SATOMI_HAS_PADDING_BITS(T))
       SATOMI_CLEAR_PADDING_BITS(&desired);
 
     #define SATOMI_ATOMIC_OP(INT) return __atomic_compare_exchange_n((volatile INT *)&object, (INT *)&expected, SATOMI_BIT_CAST(INT, desired),\
-      1, int(order), int(order == memory_order_acq_rel || order == memory_order_seq_cst ? memory_order_acquire : memory_order_relaxed));
+      1, (int)order, (int)(order == memory_order_acq_rel || order == memory_order_seq_cst ? memory_order_acquire : memory_order_relaxed));
     SATOMI_CHOOSE_SIZE(T, SATOMI_ATOMIC_OP)
     #undef SATOMI_ATOMIC_OP
 
     else if constexpr (sizeof(T) == 16)
     {
     #if defined(__x86_64__)
-      return atomic_compare_exchange_strong<order>(object, expected, desired);
+      return atomic_compare_exchange_strong(object, expected, desired, order);
     #elif defined(__aarch64__)
 
       struct alignas(16) uint128__ { __UINT64_TYPE__ v[2]; } original;
@@ -432,8 +523,8 @@ namespace satomi
   }
 
 
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr T atomic_exchange(volatile T &object, T value)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr T atomic_exchange(volatile T &object, T value, memory_order order = memory_order_seq_cst) noexcept
   {
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -476,13 +567,13 @@ namespace satomi
     else if constexpr (sizeof(T) == 16)
     {
       T result = value;
-      while (!atomic_compare_exchange_strong<order>(object, result, value)) {}
+      while (!atomic_compare_exchange_strong(object, result, value, order)) {}
       return result;
     }
 
   #else
 
-    #define SATOMI_ATOMIC_OP(INT) return SATOMI_BIT_CAST(T, __atomic_exchange_n((volatile INT *)&object, SATOMI_BIT_CAST(INT, value), int(order)))
+    #define SATOMI_ATOMIC_OP(INT) return SATOMI_BIT_CAST(T, __atomic_exchange_n((volatile INT *)&object, SATOMI_BIT_CAST(INT, value), (int)order))
     SATOMI_CHOOSE_SIZE(T, SATOMI_ATOMIC_OP)
     #undef SATOMI_ATOMIC_OP
 
@@ -536,20 +627,17 @@ namespace satomi
 
     #endif
     }
-    else
-    {
-      return __atomic_exchange_n(&object, value, int(order));
-    }
   #endif
   }
 
 
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr T atomic_load(const volatile T &object)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr T atomic_load(const volatile T &object, memory_order order = memory_order_seq_cst) noexcept
   {
-    static_assert(order == memory_order_relaxed || order == memory_order_acquire || 
-      order == memory_order_consume || order == memory_order_seq_cst, 
-      "Please specify a valid loading memory order");
+    if (order == memory_order_release)
+      order = memory_order_acquire;
+    else if (order == memory_order_acq_rel)
+      order = memory_order_seq_cst;
       
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -564,21 +652,21 @@ namespace satomi
     if constexpr (sizeof(T) == 1)
     {
       auto v = __iso_volatile_load8((const volatile __int8 *)&object);
-      if constexpr (order != memory_order_relaxed)
+      if (order != memory_order_relaxed)
         SATOMI_COMPILER_OR_MEMORY_BARRIER();
       return SATOMI_BIT_CAST(T, v);
     }
     else if constexpr (sizeof(T) == 2)
     {
       auto v = __iso_volatile_load16((const volatile __int16 *)&object);
-      if constexpr (order != memory_order_relaxed)
+      if (order != memory_order_relaxed)
         SATOMI_COMPILER_OR_MEMORY_BARRIER();
       return SATOMI_BIT_CAST(T, v);
     }
     else if constexpr (sizeof(T) == 4)
     {
       auto v = __iso_volatile_load32((const volatile __int32 *)&object);
-      if constexpr (order != memory_order_relaxed)
+      if (order != memory_order_relaxed)
         SATOMI_COMPILER_OR_MEMORY_BARRIER();
       return SATOMI_BIT_CAST(T, v);
     }
@@ -589,7 +677,7 @@ namespace satomi
     #else
       auto v = __iso_volatile_load64((const volatile __int64 *)&object);
     #endif
-      if constexpr (order != memory_order_relaxed)
+      if (order != memory_order_relaxed)
         SATOMI_COMPILER_OR_MEMORY_BARRIER();
       return SATOMI_BIT_CAST(T, v);
     }
@@ -604,7 +692,7 @@ namespace satomi
 
   #else
 
-    #define SATOMI_ATOMIC_OP(INT) return SATOMI_BIT_CAST(T, __atomic_load_n((volatile INT *)&object, int(order)))
+    #define SATOMI_ATOMIC_OP(INT) return SATOMI_BIT_CAST(T, __atomic_load_n((volatile INT *)&object, (int)order))
     SATOMI_CHOOSE_SIZE(T, SATOMI_ATOMIC_OP)
     #undef SATOMI_ATOMIC_OP
 
@@ -666,7 +754,7 @@ namespace satomi
           : "memory"                                                     \
         );
 
-      if constexpr (order == memory_order_relaxed)
+      if (order == memory_order_relaxed)
         SATOMI_DEFINE_LOAD_MEMORY_ORDERS()
       else
         SATOMI_DEFINE_LOAD_MEMORY_ORDERS("a")
@@ -680,12 +768,14 @@ namespace satomi
   #endif
   }
 
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr void atomic_store(volatile T &object, T value)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr void atomic_store(volatile T &object, T value, memory_order order = memory_order_seq_cst) noexcept
   {
-    static_assert(order == memory_order_relaxed || order == memory_order_release || 
-      order == memory_order_seq_cst, "Please specify a valid store memory order");
-      
+    if (order == memory_order_acquire || order == memory_order_consume)
+      order = memory_order_release;
+    else if (order == memory_order_acq_rel)
+      order = memory_order_seq_cst;
+          
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
       const_cast<T &>(object) = value;
@@ -708,9 +798,9 @@ namespace satomi
     #define SATOMI_DEFINE_STORE_MEMORY_ORDERS(iso_suffix, interlocked_suffix, ...)\
       auto memory = (volatile __int##iso_suffix *)&object;                        \
       auto v = SATOMI_BIT_CAST(__int##iso_suffix, value);                         \
-      if constexpr (order == memory_order_relaxed)                                \
+      if (order == memory_order_relaxed)                                          \
         __iso_volatile_store##iso_suffix(memory, v);                              \
-      else if constexpr (order == memory_order_release)                           \
+      else if (order == memory_order_release)                                     \
       {                                                                           \
         SATOMI_COMPILER_OR_MEMORY_BARRIER();                                      \
         __iso_volatile_store##iso_suffix(memory, v);                              \
@@ -727,7 +817,7 @@ namespace satomi
     else if constexpr (sizeof(T) == 16)
     {
       T result = value;
-      while (!atomic_compare_exchange_strong<order>(object, result, value)) {}
+      while (!atomic_compare_exchange_strong(object, result, value, order)) {}
     }
 
   #undef SATOMI_DEFINE_STORE_MEMORY_ORDERS
@@ -735,7 +825,7 @@ namespace satomi
 
   #else
 
-    #define SATOMI_ATOMIC_OP(INT) __atomic_store_n((volatile INT *)&object, SATOMI_BIT_CAST(INT, value), int(order))
+    #define SATOMI_ATOMIC_OP(INT) __atomic_store_n((volatile INT *)&object, SATOMI_BIT_CAST(INT, value), (int)order)
     SATOMI_CHOOSE_SIZE(T, SATOMI_ATOMIC_OP)
     #undef SATOMI_ATOMIC_OP
 
@@ -798,7 +888,7 @@ namespace satomi
           : "memory"                                                                \
         );
 
-      if constexpr (order == memory_order_relaxed)
+      if (order == memory_order_relaxed)
         SATOMI_DEFINE_STORE_MEMORY_ORDERS()
       else
         SATOMI_DEFINE_STORE_MEMORY_ORDERS("l")
@@ -813,8 +903,8 @@ namespace satomi
 
 
   // only available for integral types
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr T atomic_fetch_add(volatile T &object, T operand)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr T atomic_fetch_add(volatile T &object, T operand, memory_order order = memory_order_seq_cst) noexcept
   {
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -845,10 +935,15 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 16)
     {
-      auto current = atomic_load<order>(object);
-      while (!atomic_compare_exchange_strong<order>(object, current, current + operand)) {}
+      auto current = atomic_load(object, order);
+      while (!atomic_compare_exchange_strong(object, current, current + operand, order)) {}
       return current;
     }
+
+    // only to satisfy the arm warnings since msvc doesn't recognise __fastfail being noreturn
+    #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
+      return {};
+    #endif
 
   #else
 
@@ -856,8 +951,8 @@ namespace satomi
     {
     #if defined(__x86_64__)
 
-      auto current = atomic_load<order>(object);
-      while (!atomic_compare_exchange_strong<order>(object, current, current + operand)) {}
+      auto current = atomic_load(object, order);
+      while (!atomic_compare_exchange_strong(object, current, current + operand, order)) {}
       return current;       
 
     #elif defined(__aarch64__)
@@ -891,7 +986,7 @@ namespace satomi
           "adc %x[result_" SATOMI_ARG_HI "], %x[original_" SATOMI_ARG_HI "], %x[operand_" SATOMI_ARG_HI "]\n\t" \
           "st" store_order "xp %w[success], %x[result_0], %x[result_1], %[target]\n\t"                          \
           "cbnz %w[success], 1b\n\t"                                                                            \
-          : [success] "=&r" (success), [target] "+Q" (&object),                                                 \
+          : [success] "=&r" (success), [target] "+Q" (object),                                                  \
             [original_0] "=&r" (original.v[0]), [original_1] "=&r" (original.v[1]),                             \
             [result_0] "=&r" (result.v[0]), [result_1] "=&r" (result.v[1])                                      \
           : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                                                \
@@ -909,7 +1004,7 @@ namespace satomi
     }
     else
     {
-      return __atomic_fetch_add(&object, operand, int(order));
+      return __atomic_fetch_add(&object, operand, (int)order);
     }
 
   #endif
@@ -917,8 +1012,8 @@ namespace satomi
 
 
   // only available for pointer types
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_POINTER(T)
-  constexpr T atomic_fetch_add(volatile T &object, detail::ptrdiff_t operand)
+  template<typename T> requires SATOMI_IS_POINTER(T)
+  SATOMI_INLINE constexpr T atomic_fetch_add(volatile T &object, detail::ptrdiff_t operand, memory_order order = memory_order_seq_cst) noexcept
   {
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -942,7 +1037,7 @@ namespace satomi
 
   #else
 
-    return __atomic_fetch_add(&object, operand, int(order));
+    return __atomic_fetch_add(&object, operand, (int)order);
 
   #endif
   }
@@ -954,23 +1049,23 @@ namespace satomi
   #endif
 
   // only available for integral types
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr T atomic_fetch_sub(volatile T &object, T operand)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr T atomic_fetch_sub(volatile T &object, T operand, memory_order order = memory_order_seq_cst) noexcept
   {
-    return atomic_fetch_add<order>(object, (T)(-operand));
+    return atomic_fetch_add(object, (T)(-operand), order);
   }
 
 
   // only available for pointer types
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_POINTER(T)
-  constexpr T atomic_fetch_sub(volatile T &object, detail::ptrdiff_t operand)
+  template<typename T> requires SATOMI_IS_POINTER(T)
+  SATOMI_INLINE constexpr T atomic_fetch_sub(volatile T &object, detail::ptrdiff_t operand, memory_order order = memory_order_seq_cst) noexcept
   {
-    return atomic_fetch_sub<order>(object, -operand);
+    return atomic_fetch_sub(object, -operand, order);
   }
 
 
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr T atomic_fetch_and(volatile T &object, T operand)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr T atomic_fetch_and(volatile T &object, T operand, memory_order order = memory_order_seq_cst) noexcept
   {    
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -1001,8 +1096,8 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 16)
     {
-      auto current = atomic_load<order>(object);
-      while (!atomic_compare_exchange_strong<order>(object, current, current & operand)) {}
+      auto current = atomic_load(object, order);
+      while (!atomic_compare_exchange_strong(object, current, current & operand, order)) {}
       return current;
     }
 
@@ -1012,8 +1107,8 @@ namespace satomi
     {
     #if defined(__x86_64__)
 
-      auto current = atomic_load<order>(object);
-      while (!atomic_compare_exchange_strong<order>(object, current, current & operand)) {}
+      auto current = atomic_load(object, order);
+      while (!atomic_compare_exchange_strong(object, current, current & operand, order)) {}
       return current;
 
     #elif defined(__aarch64__)
@@ -1031,7 +1126,7 @@ namespace satomi
           "and %x[result_1], %x[original_1], %x[operand_1]\n\t"                       \
           "st" store_order "xp %w[success], %x[result_0], %x[result_1], %[target]\n\t"\
           "cbnz %w[success], 1b\n\t"                                                  \
-          : [success] "=&r" (success), [target] "+Q" (&object),                       \
+          : [success] "=&r" (success), [target] "+Q" (object),                        \
             [original_0] "=&r" (original.v[0]), [original_1] "=&r" (original.v[1]),   \
             [result_0] "=&r" (result.v[0]), [result_1] "=&r" (result.v[1])            \
           : [operand_0] "Lr" (o.v[0]),                                                \
@@ -1048,15 +1143,15 @@ namespace satomi
     }
     else
     {
-      return __atomic_fetch_and(&object, operand, int(order));
+      return __atomic_fetch_and(&object, operand, (int)order);
     }
 
   #endif
   }
 
 
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr T atomic_fetch_or(volatile T &object, T operand)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr T atomic_fetch_or(volatile T &object, T operand, memory_order order = memory_order_seq_cst) noexcept
   {
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -1087,8 +1182,8 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 16)
     {
-      auto current = atomic_load<order>(object);
-      while (!atomic_compare_exchange_strong<order>(object, current, current | operand)) {}
+      auto current = atomic_load(object, order);
+      while (!atomic_compare_exchange_strong(object, current, current | operand, order)) {}
       return current;
     }
 
@@ -1098,8 +1193,8 @@ namespace satomi
     {
     #if defined(__x86_64__)
 
-      auto current = atomic_load<order>(object);
-      while (!atomic_compare_exchange_strong<order>(object, current, current | operand)) {}
+      auto current = atomic_load(object, order);
+      while (!atomic_compare_exchange_strong(object, current, current | operand, order)) {}
       return current;
 
     #elif defined(__aarch64__)
@@ -1117,7 +1212,7 @@ namespace satomi
           "orr %x[result_1], %x[original_1], %x[operand_1]\n\t"                       \
           "st" store_order "xp %w[success], %x[result_0], %x[result_1], %[target]\n\t"\
           "cbnz %w[success], 1b\n\t"                                                  \
-          : [success] "=&r" (success), [target] "+Q" (&object),                       \
+          : [success] "=&r" (success), [target] "+Q" (object),                        \
             [original_0] "=&r" (original.v[0]), [original_1] "=&r" (original.v[1]),   \
             [result_0] "=&r" (result.v[0]), [result_1] "=&r" (result.v[1])            \
           : [operand_0] "Lr" (o.v[0]),                                                \
@@ -1134,14 +1229,14 @@ namespace satomi
     }
     else
     {
-      return __atomic_fetch_or(&object, operand, int(order));
+      return __atomic_fetch_or(&object, operand, (int)order);
     }
 
   #endif
   }
 
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr T atomic_fetch_xor(volatile T &object, T operand)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr T atomic_fetch_xor(volatile T &object, T operand, memory_order order = memory_order_seq_cst) noexcept
   {
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -1172,8 +1267,8 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 16)
     {
-      auto current = atomic_load<order>(object);
-      while (!atomic_compare_exchange_strong<order>(object, current, current ^ operand)) {}
+      auto current = atomic_load(object, order);
+      while (!atomic_compare_exchange_strong(object, current, current ^ operand, order)) {}
       return current;
     }
 
@@ -1183,8 +1278,8 @@ namespace satomi
     {
     #if defined(__x86_64__)
 
-      auto current = atomic_load<order>(object);
-      while (!atomic_compare_exchange_strong<order>(object, current, current ^ operand)) {}
+      auto current = atomic_load(object, order);
+      while (!atomic_compare_exchange_strong(object, current, current ^ operand, order)) {}
       return current;
 
     #elif defined(__aarch64__)
@@ -1202,7 +1297,7 @@ namespace satomi
           "eor %x[result_1], %x[original_1], %x[operand_1]\n\t"                       \
           "st" store_order "xp %w[success], %x[result_0], %x[result_1], %[target]\n\t"\
           "cbnz %w[success], 1b\n\t"                                                  \
-          : [success] "=&r" (success), [target] "+Q" (&object),                       \
+          : [success] "=&r" (success), [target] "+Q" (object),                        \
             [original_0] "=&r" (original.v[0]), [original_1] "=&r" (original.v[1]),   \
             [result_0] "=&r" (result.v[0]), [result_1] "=&r" (result.v[1])            \
           : [operand_0] "Lr" (o.v[0]),                                                \
@@ -1219,7 +1314,7 @@ namespace satomi
     }
     else
     {
-      return __atomic_fetch_xor(&object, operand, int(order));
+      return __atomic_fetch_xor(&object, operand, (int)order);
     }
 
   #endif
@@ -1264,11 +1359,13 @@ namespace satomi
 
   #endif
 
-  template<memory_order order = memory_order_seq_cst, typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr T atomic_wait(volatile T &object, T old)
+  template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
+  SATOMI_INLINE constexpr T atomic_wait(volatile T &object, T old, memory_order order = memory_order_seq_cst) noexcept
   {
-    static_assert(order == memory_order_relaxed || order == memory_order_consume 
-      || order == memory_order_acquire || order == memory_order_seq_cst);
+    if (order == memory_order_release)
+      order = memory_order_acquire;
+    else if (order == memory_order_acq_rel)
+      order = memory_order_seq_cst;
 
     if (SATOMI_IS_CONSTANT_EVALUATED())
     {
@@ -1283,21 +1380,21 @@ namespace satomi
 
     if constexpr (sizeof(T) <= 8)
     {
-      auto value = atomic_load<order>(object);
+      auto value = atomic_load(object, order);
       while (value == old)
       {
         WaitOnAddress(&object, &old, sizeof(T), 0xFFFF'FFFF /*No timeout*/);
-        value = atomic_load<order>(object);
+        value = atomic_load(object, order);
       }
       return value;
     }
     else if constexpr (sizeof(T) == 16)
     {
-      auto value = atomic_load<order>(object);
+      auto value = atomic_load(object, order);
       while (value == old)
       {
         WaitOnAddress(&object, &value, 8, 0xFFFF'FFFF /*No timeout*/);
-        value = atomic_load<order>(object);
+        value = atomic_load(object, order);
       }
       return value;
     }
@@ -1308,14 +1405,14 @@ namespace satomi
 
     // assumes macOS has __ulock_wait and __ulock_wake, >= Darwin 16 (macOS 10.12)
 
-    T current = atomic_load<order>(object);
+    T current = atomic_load(object, order);
 
     auto short_spin = [&]()
     {
       constexpr auto spin_count = 16;
       for (int i = 0; i < spin_count; ++i)
       {
-        current = atomic_load<order>(object);
+        current = atomic_load(object, order);
         if (current != old)
           return true;
 
@@ -1404,7 +1501,7 @@ namespace satomi
 
     #endif
 
-      current = atomic_load<order>(object);
+      current = atomic_load(object, order);
     }
 
     (void)__atomic_fetch_sub(&slot.wait_count, 1, __ATOMIC_RELEASE);
@@ -1414,7 +1511,7 @@ namespace satomi
   }
 
   template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr void atomic_notify_one(volatile T &object)
+  SATOMI_INLINE constexpr void atomic_notify_one(volatile T &object) noexcept
   {
     if (SATOMI_IS_CONSTANT_EVALUATED())
       return;
@@ -1466,7 +1563,7 @@ namespace satomi
   }
 
   template<typename T> requires SATOMI_IS_ATOMIC_READY(T)
-  constexpr void atomic_notify_all(volatile T &object)
+  SATOMI_INLINE constexpr void atomic_notify_all(volatile T &object) noexcept
   {
     if (SATOMI_IS_CONSTANT_EVALUATED())
       return;
@@ -1565,6 +1662,8 @@ namespace satomi
   #endif
 
   public:
+    static constexpr bool is_always_lock_free = sizeof(T) <= 16;
+
     constexpr atomic() noexcept = default;
     constexpr atomic(T value) noexcept requires owns_data : object{ value }
     {
@@ -1575,62 +1674,60 @@ namespace satomi
     
     constexpr atomic(const atomic &) noexcept requires (!owns_data) = default;
     constexpr atomic(atomic &&) noexcept requires (!owns_data) = default;
-    constexpr atomic &operator=(const atomic &) requires (!owns_data) = default;
+    constexpr atomic &operator=(const atomic &) noexcept requires (!owns_data) = default;
     constexpr atomic &operator=(atomic &&) noexcept requires (!owns_data) = default;
 
-    template<memory_order order = memory_order_seq_cst>
-    constexpr void store(T desired) noexcept { atomic_store<order>(*object, desired); }
+    constexpr T load(memory_order order = memory_order_seq_cst) const noexcept 
+    { return atomic_load(*object, order); }  
 
-    template<memory_order order = memory_order_seq_cst>
-    constexpr T load() const noexcept { return atomic_load<order>(*object); }    
+    constexpr void store(T desired, memory_order order = memory_order_seq_cst) noexcept 
+    { atomic_store(*object, desired, order); }
 
-    template<memory_order order = memory_order_seq_cst>
-    constexpr T exchange(T desired) noexcept { return atomic_exchange<order>(*object, desired); }
+    constexpr T exchange(T desired, memory_order order = memory_order_seq_cst) noexcept 
+    { return atomic_exchange(*object, desired, order); }
 
-    template<memory_order order = memory_order_seq_cst>
-    constexpr bool compare_exchange_strong(T &expected, T desired) noexcept 
-    { return atomic_compare_exchange_strong<order>(*object, expected, desired); }
+    constexpr bool compare_exchange_strong(T &expected, T desired, memory_order order = memory_order_seq_cst) noexcept 
+    { return atomic_compare_exchange_strong(*object, expected, desired, order); }
 
-    template<memory_order order = memory_order_seq_cst>
-    constexpr bool compare_exchange_weak(T &expected, T desired) noexcept 
-    { return atomic_compare_exchange_weak<order>(*object, expected, desired); }
+    constexpr bool compare_exchange_weak(T &expected, T desired, memory_order order = memory_order_seq_cst) noexcept 
+    { return atomic_compare_exchange_weak(*object, expected, desired, order); }
 
-    template<memory_order order = memory_order_seq_cst> requires is_integral || is_floating_point
-    constexpr T fetch_add(T operand) noexcept
+    constexpr T fetch_add(T operand, memory_order order = memory_order_seq_cst) noexcept requires is_integral || is_floating_point
     {
       if constexpr (is_integral)
-        return atomic_fetch_add<order>(*object, operand);
+        return atomic_fetch_add(*object, operand, order);
       else
       {
-        auto current = load<order>();
-        while (!compare_exchange_strong<order>(current, current + operand)) {}
+        auto current = load(order);
+        while (!compare_exchange_strong(current, current + operand, order)) {}
         return current;
       }
     }
 
-    template<memory_order order = memory_order_seq_cst> requires is_pointer
-    constexpr T fetch_add(detail::ptrdiff_t operand) noexcept
-    { return atomic_fetch_add<order>(*object, operand); }    
+    constexpr T fetch_add(detail::ptrdiff_t operand, memory_order order = memory_order_seq_cst) noexcept requires is_pointer
+    { return atomic_fetch_add(*object, operand, order); }    
 
-    template<memory_order order = memory_order_seq_cst> requires is_integral || is_floating_point
-    constexpr T fetch_sub(T operand) noexcept { return atomic_fetch_add<order>(*object, (T)(-operand)); }
+    constexpr T fetch_sub(T operand, memory_order order = memory_order_seq_cst) noexcept requires is_integral || is_floating_point
+    { return atomic_fetch_add(*object, (T)(-operand), order); }
 
-    template<memory_order order = memory_order_seq_cst> requires is_pointer
-    constexpr T fetch_sub(detail::ptrdiff_t operand) noexcept { return fetch_add<order>(-operand); }    
+    constexpr T fetch_sub(detail::ptrdiff_t operand, memory_order order = memory_order_seq_cst) noexcept requires is_pointer
+    { return fetch_add(-operand, order); }    
 
-    template<memory_order order = memory_order_seq_cst> requires is_integral
-    constexpr T fetch_and(T operand) noexcept { return atomic_fetch_and<order>(*object, operand); }
+    constexpr T fetch_and(T operand, memory_order order = memory_order_seq_cst) noexcept requires is_integral
+    { return atomic_fetch_and(*object, operand, order); }
 
-    template<memory_order order = memory_order_seq_cst> requires is_integral
-    constexpr T fetch_or(T operand) noexcept { return atomic_fetch_or<order>(*object, operand); }
+    constexpr T fetch_or(T operand, memory_order order = memory_order_seq_cst) noexcept requires is_integral
+    { return atomic_fetch_or(*object, operand, order); }
 
-    template<memory_order order = memory_order_seq_cst> requires is_integral
-    constexpr T fetch_xor(T operand) noexcept { return atomic_fetch_xor<order>(*object, operand); }
+    constexpr T fetch_xor(T operand, memory_order order = memory_order_seq_cst) noexcept requires is_integral 
+    { return atomic_fetch_xor(*object, operand, order); }
 
-    template<memory_order order = memory_order_seq_cst>
-    constexpr T wait(T old) noexcept { return atomic_wait<order>(*object, old); }
+    constexpr T wait(T old, memory_order order = memory_order_seq_cst) noexcept 
+    { return atomic_wait(*object, old, order); }
     constexpr void notify_one() noexcept { atomic_notify_one(*object); }
     constexpr void notify_all() noexcept { atomic_notify_all(*object); }
+
+    static constexpr bool is_lock_free() noexcept { return is_always_lock_free; }
 
     constexpr T *address() const noexcept requires (!owns_data) { return object; }
 
@@ -1649,6 +1746,7 @@ namespace satomi
   #pragma warning(pop)
 #endif
 
+#undef SATOMI_INLINE
 #undef SATOMI_IS_POINTER
 #undef SATOMI_CONDITIONAL
 #undef SATOMI_IS_SAME
@@ -1659,6 +1757,7 @@ namespace satomi
 #undef SATOMI_CHOOSE_MEMORY_ORDER_ASM
 #undef SATOMI_CHECK_ALIGNMENT
 #undef SATOMI_CHOOSE_SIZE
+#undef SATOMI_MEMORY_LOAD_ACQUIRE_BARRIER
 #undef SATOMI_COMPILER_OR_MEMORY_BARRIER
 #undef SATOMI_COMPILER_BARRIER
 #undef SATOMI_HAS_PADDING_BITS
