@@ -112,7 +112,7 @@ extern "C"
     #define SATOMI_CHOOSE_MEMORY_ORDER(order, X, args) X args;
     // x86/x64 hardware only emits memory barriers inside _Interlocked intrinsics
     #define SATOMI_COMPILER_OR_MEMORY_BARRIER() SATOMI_COMPILER_BARRIER()
-      
+    
     long _InterlockedIncrement(long volatile * _Addend);
   #endif
 
@@ -728,7 +728,8 @@ namespace satomi
 
       __asm__ __volatile__
       (
-        // the load needs to be done in assembly because movq is guaranteed to be atomic
+        // store whatever is rbx/rcx in rax/rdx so that 
+        // even if we succeed to exchange we already have the value in rax/rdx
         "movq %%rbx, %%rax\n\t"
         "movq %%rcx, %%rdx\n\t"
         "lock; cmpxchg16b %[target]\n\t"
@@ -792,11 +793,11 @@ namespace satomi
 
   #if defined(_MSC_VER) && ! (__clang__)
 
-  #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
-    #define SATOMI_SEQ_CST_STORE(iso_suffix, ...) SATOMI_COMPILER_OR_MEMORY_BARRIER(); __iso_volatile_store##iso_suffix(memory, v); SATOMI_COMPILER_OR_MEMORY_BARRIER();
-  #else
-    #define SATOMI_SEQ_CST_STORE(iso_suffix, interlocked_suffix, ...) (void)_InterlockedExchange##interlocked_suffix(__VA_ARGS__ memory, v);
-  #endif
+    #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
+      #define SATOMI_SEQ_CST_STORE(iso_suffix, ...) SATOMI_COMPILER_OR_MEMORY_BARRIER(); __iso_volatile_store##iso_suffix(memory, v); SATOMI_COMPILER_OR_MEMORY_BARRIER();
+    #else
+      #define SATOMI_SEQ_CST_STORE(iso_suffix, interlocked_suffix, ...) (void)_InterlockedExchange##interlocked_suffix(__VA_ARGS__ memory, v);
+    #endif
 
     #define SATOMI_DEFINE_STORE_MEMORY_ORDERS(iso_suffix, interlocked_suffix, ...)\
       auto memory = (volatile __int##iso_suffix *)&object;                        \
@@ -857,7 +858,7 @@ namespace satomi
 
       #endif
 
-        struct uint128___ { __UINT64_TYPE__ v[2]; };
+        struct alignas(16) uint128___ { __UINT64_TYPE__ v[2]; };
         auto v = SATOMI_BIT_CAST(uint128___, value);
 
         __asm__ __volatile__
@@ -930,7 +931,7 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 4)
     {
-      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedExchangeAdd, ((volatile long *)&object, operand))
+      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedExchangeAdd, ((volatile long *)&object, (long)operand))
     }
     else if constexpr (sizeof(T) == 8)
     {
@@ -1031,7 +1032,7 @@ namespace satomi
 
     if constexpr (sizeof(T) == 4)
     {
-      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedExchangeAdd, ((volatile __int32 *)&object, operand))
+      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedExchangeAdd, ((volatile __int32 *)&object, (long)operand))
     }
     else if constexpr (sizeof(T) == 8)
     {
@@ -1091,7 +1092,7 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 4)
     {
-      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedAnd, ((volatile long *)&object, operand))
+      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedAnd, ((volatile long *)&object, (long)operand))
     }
     else if constexpr (sizeof(T) == 8)
     {
@@ -1177,7 +1178,7 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 4)
     {
-      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedOr, ((volatile long *)&object, operand))
+      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedOr, ((volatile long *)&object, (long)operand))
     }
     else if constexpr (sizeof(T) == 8)
     {
@@ -1262,7 +1263,7 @@ namespace satomi
     }
     else if constexpr (sizeof(T) == 4)
     {
-      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedXor, ((volatile long *)&object, operand))
+      SATOMI_CHOOSE_MEMORY_ORDER(order, return _InterlockedXor, ((volatile long *)&object, (long)operand))
     }
     else if constexpr (sizeof(T) == 8)
     {
@@ -1702,7 +1703,7 @@ namespace satomi
       else
       {
         auto current = load(order);
-        while (!compare_exchange_strong(current, current + operand, order)) {}
+        while (!compare_exchange_weak(current, current + operand, order)) {}
         return current;
       }
     }
