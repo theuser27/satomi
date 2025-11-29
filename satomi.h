@@ -27,13 +27,13 @@
 #define SATOMI_H
 
 // Customisation points are:
-// 1. SATOMI_ASSERT - basic assert
+// 1. SATOMI_ASSERT - basic assert to avoid using <assert.h>
 // 2. SATOMI_DO_NOT_DEFINE_MEMORY_ORDER - define to skip memory_order enum
 // 3. SATOMI_DO_NOT_DEFINE_MACROS - define to skip usage macros
 
 #ifndef SATOMI_ASSERT
   #include <assert.h>
-  #define SATOMI_ASSERT(...) assert(__VA_ARGS__)
+  #define SATOMI_ASSERT(condition) assert(condition)
 #endif
 
 #ifndef NULL
@@ -83,33 +83,35 @@ extern "C"
 
 #endif
 
+#if defined(_MSC_VER) && !defined(__clang__)
+  #define SATOMI_ALIGNAS(x) __declspec(align(x))
+  #define SATOMI_U64 unsigned __int64
+#else
+  #define SATOMI_ALIGNAS(x) __attribute__((aligned(x)))
+  #define SATOMI_U64 __UINT64_TYPE__
+#endif
+
+#define SATOMI_STATIC_ASSERT(condition, message) typedef char satomi__static_assertion_##message[(condition)?1:-1]
+
 #ifdef __cplusplus
   #define SATOMI_BOOL bool
-  #define SATOMI_ALIGNAS(x) alignas(x)
-  #define SATOMI_STATIC_ASSERT(condition, message) static_assert(condition, #message);
 #else
   #define SATOMI_BOOL _Bool
-  #define SATOMI_STATIC_ASSERT(condition, message) typedef char satomi_static_assertion_##message[(condition)?1:-1]
-  #if defined(_MSC_VER) && ! (__clang__)
-    #define SATOMI_ALIGNAS(x) __declspec(align(x))
-  #else
-    #define SATOMI_ALIGNAS(x) __attribute__((aligned(x)))
-  #endif
 #endif
 
 // is the type a power-of-2 and is it self-aligned (i don't know of any architectures that support unaligned atomics)
 #define SATOMI_CHECK_PRECONDITIONS(size, x) \
   (((SATOMI_ASSERT((size & (size - 1)) == 0), (size & (size - 1)) == 0) && \
-    (SATOMI_ASSERT(((unsigned long long)(x) % size) == 0), (((unsigned long long)(x) % size) == 0))) || (SATOMI_TRAP(), 1))
+    (SATOMI_ASSERT(((SATOMI_U64)(x) % size) == 0), (((SATOMI_U64)(x) % size) == 0))) || (SATOMI_TRAP(), 1))
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 
   void _ReadWriteBarrier(void);
   // pragma to avoid deprecation warnings
   #define SATOMI_COMPILER_BARRIER() _Pragma("warning(push)") _Pragma("warning(disable : 4996)") _ReadWriteBarrier() _Pragma("warning(pop)")
   __declspec(noreturn) void __fastfail(unsigned int code);
   #define SATOMI_TRAP() __fastfail(/*FAST_FAIL_FATAL_APP_EXIT*/ 7)
-  void *__cdecl memcpy(void *destination, const void *source, unsigned long long count);
+  void *__cdecl memcpy(void *destination, const void *source, SATOMI_U64 count);
   // safely reinterpreting arbitrary types to integrals (padding bits are NOT taken into account)
   #define SATOMI_MEMCPY(size, to, from) memcpy(to, from, size)
   #define SATOMI_INLINE __forceinline 
@@ -193,7 +195,7 @@ extern "C"
 
 #else
 
-  SATOMI_STATIC_ASSERT(sizeof(__UINT64_TYPE__) == sizeof(void *), Only_64_bit_arches_are_supported);
+  SATOMI_STATIC_ASSERT(sizeof(SATOMI_U64) == sizeof(void *), Only_64_bit_arches_are_supported);
 
   #if defined(__GNUC__) && !defined(__clang__)
     #pragma GCC diagnostic push
@@ -260,14 +262,14 @@ extern "C"
     memory_order_acquire,
     memory_order_release,
     memory_order_acq_rel,
-    memory_order_seq_cst,
+    memory_order_seq_cst
   } memory_order;
 
 #endif
 
 SATOMI_INLINE void satomi__atomic_thread_fence(memory_order order)
 {
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
   SATOMI_COMPILER_BARRIER();
   #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
     if (order == memory_order_acquire || order == memory_order_consume)
@@ -310,7 +312,7 @@ SATOMI_INLINE void satomi__atomic_thread_fence(memory_order order)
 
 SATOMI_INLINE void satomi__atomic_signal_fence(memory_order order)
 {
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
   if (order != memory_order_relaxed)
     SATOMI_COMPILER_BARRIER();
 #else
@@ -322,7 +324,7 @@ SATOMI_INLINE void satomi__atomic_signal_fence(memory_order order)
 
 
 
-SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(unsigned long long size, 
+SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size, 
   volatile void *target, void *expected, const void *desired, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -333,7 +335,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(unsigned long l
     return 0;
   }
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
   (void)order;
 
   // this works because windows only works on little-endian machines
@@ -373,7 +375,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(unsigned long l
   
   else if (size == 16)
   {
-    struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } ret, e, d;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, e, d;
     SATOMI_MEMCPY(size, &e, expected);
     SATOMI_MEMCPY(size, &d, desired);
 
@@ -429,7 +431,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(unsigned long l
 #endif
 }
 
-SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(unsigned long long size, 
+SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size, 
   volatile void *target, void *expected, const void *desired, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -440,7 +442,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(unsigned long lon
     return 0;
   }
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 
   return satomi__atomic_compare_exchange_strong(size, target, expected, desired, order);
 
@@ -459,7 +461,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(unsigned long lon
 
   #elif defined(__aarch64__)
 
-    struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } ret, e, d;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, e, d;
     SATOMI_MEMCPY(size, &e, expected);
     SATOMI_MEMCPY(size, &d, desired);
     SATOMI_BOOL success;
@@ -496,7 +498,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(unsigned long lon
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_exchange(unsigned long long size, void *variable,
+SATOMI_INLINE void satomi__atomic_exchange(SATOMI_U64 size, void *variable,
   volatile void *target, const void *value, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -507,7 +509,7 @@ SATOMI_INLINE void satomi__atomic_exchange(unsigned long long size, void *variab
     return;
   }
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 
   struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret, v;
   v.v[0] = 0;
@@ -536,7 +538,7 @@ SATOMI_INLINE void satomi__atomic_exchange(unsigned long long size, void *variab
 
   else if (size == 16)
   {
-    struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } ret, v;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, v;
     SATOMI_MEMCPY(size, &v, value);
 
     // shamelessly stolen from boost.atomic
@@ -550,8 +552,8 @@ SATOMI_INLINE void satomi__atomic_exchange(unsigned long long size, void *variab
       ".align 16\n\t"
       "1: lock; cmpxchg16b %[target_lo]\n\t"
       "jne 1b\n\t"
-      : [target_lo] "+m" (((volatile __UINT64_TYPE__ *)target)[0]), 
-        [target_hi] "+m" (((volatile __UINT64_TYPE__ *)target)[1]), 
+      : [target_lo] "+m" (((volatile SATOMI_U64 *)target)[0]), 
+        [target_hi] "+m" (((volatile SATOMI_U64 *)target)[1]), 
         "=&a" (ret.v[0]), "=&d" (ret.v[1])
       : "b" (v.v[0]), "c" (v.v[1])
       : "cc", "memory"
@@ -588,7 +590,7 @@ SATOMI_INLINE void satomi__atomic_exchange(unsigned long long size, void *variab
 
 
 
-SATOMI_INLINE void satomi__atomic_load(unsigned long long size, 
+SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size, 
   void *variable, const volatile void *target, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -604,7 +606,7 @@ SATOMI_INLINE void satomi__atomic_load(unsigned long long size,
   else if (order == memory_order_acq_rel)
     order = memory_order_seq_cst;
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 
   struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret;
 
@@ -653,7 +655,7 @@ SATOMI_INLINE void satomi__atomic_load(unsigned long long size,
 
   else if (size == 16)
   {
-    struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } ret;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret;
 
     #if defined(__x86_64__)
 
@@ -703,7 +705,7 @@ SATOMI_INLINE void satomi__atomic_load(unsigned long long size,
         );
 
       if (order == memory_order_relaxed)
-        SATOMI_DEFINE_LOAD_MEMORY_ORDERS()
+        SATOMI_DEFINE_LOAD_MEMORY_ORDERS("")
       else
         SATOMI_DEFINE_LOAD_MEMORY_ORDERS("a")
       
@@ -717,7 +719,7 @@ SATOMI_INLINE void satomi__atomic_load(unsigned long long size,
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_store(unsigned long long size, 
+SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size, 
   volatile void *target, void *value, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -733,7 +735,7 @@ SATOMI_INLINE void satomi__atomic_store(unsigned long long size,
   else if (order == memory_order_acq_rel)
     order = memory_order_seq_cst;
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 
   #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
     #define SATOMI_SEQ_CST_STORE(iso_suffix, ...) SATOMI_COMPILER_OR_MEMORY_BARRIER(); __iso_volatile_store##iso_suffix(memory, v); SATOMI_COMPILER_OR_MEMORY_BARRIER();
@@ -779,7 +781,7 @@ SATOMI_INLINE void satomi__atomic_store(unsigned long long size,
 
   else if (size == 16)
   {
-    struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } ret, v;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, v;
     SATOMI_MEMCPY(size, &v, value);
 
   #if defined(__x86_64__)
@@ -807,8 +809,8 @@ SATOMI_INLINE void satomi__atomic_store(unsigned long long size,
         ".align 16\n\t"
         "1: lock; cmpxchg16b %[target_lo]\n\t"
         "jne 1b\n\t"
-        : [target_lo] "=m" (((volatile __UINT64_TYPE__ *)target)[0]), 
-          [target_hi] "=m" (((volatile __UINT64_TYPE__ *)target)[1])
+        : [target_lo] "=m" (((volatile SATOMI_U64 *)target)[0]), 
+          [target_hi] "=m" (((volatile SATOMI_U64 *)target)[1])
         : "b" (v.v[0]), "c" (v.v[1])
         : "cc", "rax", "rdx", "memory"
       );
@@ -833,7 +835,7 @@ SATOMI_INLINE void satomi__atomic_store(unsigned long long size,
       );
 
     if (order == memory_order_relaxed)
-      SATOMI_DEFINE_STORE_MEMORY_ORDERS()
+      SATOMI_DEFINE_STORE_MEMORY_ORDERS("")
     else
       SATOMI_DEFINE_STORE_MEMORY_ORDERS("l")
     
@@ -849,7 +851,7 @@ SATOMI_INLINE void satomi__atomic_store(unsigned long long size,
 
 // only available for integral types (no floating point)
 // assumes 2's complement (which is the defacto standard)
-SATOMI_INLINE void satomi__atomic_fetch_add(unsigned long long size, 
+SATOMI_INLINE void satomi__atomic_fetch_add(SATOMI_U64 size, 
   void *variable, volatile void *target, void *operand, SATOMI_BOOL subtracting, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -860,7 +862,7 @@ SATOMI_INLINE void satomi__atomic_fetch_add(unsigned long long size,
     return;
   }
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 
   struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret, o;
   o.v[0] = 0;
@@ -877,7 +879,7 @@ SATOMI_INLINE void satomi__atomic_fetch_add(unsigned long long size,
     satomi__atomic_load(size, &ret, target, order);
     if (subtracting)
     {
-      unsigned __int64 temp = ~(unsigned __int64)o.v[0];
+      SATOMI_U64 temp = ~(SATOMI_U64)o.v[0];
       o.v[1] += ((temp + 1) < temp);
       o.v[0] = -o.v[0];
     }
@@ -887,10 +889,10 @@ SATOMI_INLINE void satomi__atomic_fetch_add(unsigned long long size,
     {
       // reminder: x86 is little endian
       // annoying casts to avoid any potential overflow warnings
-      intermediate.v[0] = (__int64)((unsigned __int64)ret.v[0] + (unsigned __int64)o.v[0]);
+      intermediate.v[0] = (__int64)((SATOMI_U64)ret.v[0] + (SATOMI_U64)o.v[0]);
       // carry over if an overflow has occured in the lower part
-      intermediate.v[1] = (__int64)((unsigned __int64)ret.v[1] + (unsigned __int64)o.v[1] + 
-        ((unsigned __int64)intermediate.v[0] < (unsigned __int64)ret.v[0]));
+      intermediate.v[1] = (__int64)((SATOMI_U64)ret.v[1] + (SATOMI_U64)o.v[1] + 
+        ((SATOMI_U64)intermediate.v[0] < (SATOMI_U64)ret.v[0]));
     }
     while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
   }
@@ -939,7 +941,7 @@ SATOMI_INLINE void satomi__atomic_fetch_add(unsigned long long size,
 
     #endif
 
-    struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } ret, intermediate, o;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, intermediate, o;
 
     {
       __extension__ unsigned __int128 temp;
@@ -981,7 +983,7 @@ SATOMI_INLINE void satomi__atomic_fetch_add(unsigned long long size,
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_fetch_and(unsigned long long size, 
+SATOMI_INLINE void satomi__atomic_fetch_and(SATOMI_U64 size, 
   void *variable, volatile void *target, void *operand, memory_order order)
 {    
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -992,7 +994,7 @@ SATOMI_INLINE void satomi__atomic_fetch_and(unsigned long long size,
     return;
   }
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 
   struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret, o;
   o.v[0] = 0;
@@ -1041,7 +1043,7 @@ SATOMI_INLINE void satomi__atomic_fetch_and(unsigned long long size,
 
   #elif defined(__aarch64__)
 
-    struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } ret, intermediate, o;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, intermediate, o;
     SATOMI_MEMCPY(size, &o, operand);
     unsigned success;
 
@@ -1072,7 +1074,7 @@ SATOMI_INLINE void satomi__atomic_fetch_and(unsigned long long size,
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_fetch_or(unsigned long long size, 
+SATOMI_INLINE void satomi__atomic_fetch_or(SATOMI_U64 size, 
   void *variable, volatile void *target, void *operand, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -1083,7 +1085,7 @@ SATOMI_INLINE void satomi__atomic_fetch_or(unsigned long long size,
     return;
   }
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 
   struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret, o;
   o.v[0] = 0;
@@ -1131,7 +1133,7 @@ SATOMI_INLINE void satomi__atomic_fetch_or(unsigned long long size,
 
   #elif defined(__aarch64__)
 
-    struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } ret, intermediate, o;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, intermediate, o;
     SATOMI_MEMCPY(size, &o, operand);
     unsigned success;
 
@@ -1162,7 +1164,7 @@ SATOMI_INLINE void satomi__atomic_fetch_or(unsigned long long size,
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_fetch_xor(unsigned long long size, 
+SATOMI_INLINE void satomi__atomic_fetch_xor(SATOMI_U64 size, 
   void *variable, volatile void *target, void *operand, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -1173,7 +1175,7 @@ SATOMI_INLINE void satomi__atomic_fetch_xor(unsigned long long size,
     return;
   }
 
-#if defined(_MSC_VER) && ! (__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
 
   struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret, o;
   SATOMI_MEMCPY(size, &o, operand);
@@ -1220,7 +1222,7 @@ SATOMI_INLINE void satomi__atomic_fetch_xor(unsigned long long size,
 
   #elif defined(__aarch64__)
 
-    struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } ret, intermediate, o;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, intermediate, o;
     SATOMI_MEMCPY(size, &o, operand);
     unsigned success;
 
@@ -1293,7 +1295,7 @@ SATOMI_INLINE void satomi__atomic_fetch_xor(unsigned long long size,
 
 #endif
 
-SATOMI_INLINE void satomi__atomic_wait(unsigned long long size, void *variable, 
+SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable, 
   volatile void *target, void *expected, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -1311,7 +1313,7 @@ SATOMI_INLINE void satomi__atomic_wait(unsigned long long size, void *variable,
 
 #if defined (_WIN64)
 
-  struct SATOMI_ALIGNAS(16) uint128__ { unsigned __int64 v[2]; } ret, e;
+  struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, e;
   SATOMI_MEMCPY(size, &e, expected);
   satomi__atomic_load(size, &ret, target, order);
 
@@ -1341,7 +1343,7 @@ SATOMI_INLINE void satomi__atomic_wait(unsigned long long size, void *variable,
 
   // assumes macOS has __ulock_wait and __ulock_wake, >= Darwin 16 (macOS 10.12)
 
-  struct SATOMI_ALIGNAS(16) uint128__ { __UINT64_TYPE__ v[2]; } current, e;
+  struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } current, e;
   current.v[0] = 0;
   e.v[0] = 0;
   SATOMI_MEMCPY(size, &e, expected);
@@ -1436,7 +1438,7 @@ SATOMI_INLINE void satomi__atomic_wait(unsigned long long size, void *variable,
 
   #elif defined (__APPLE__)
 
-    __ulock_wait(SATOMI_UL_COMPARE_AND_WAIT, address, (__UINT64_TYPE__)compare, 0);
+    __ulock_wait(SATOMI_UL_COMPARE_AND_WAIT, address, (SATOMI_U64)compare, 0);
 
   #endif
   }
@@ -1448,7 +1450,7 @@ SATOMI_INLINE void satomi__atomic_wait(unsigned long long size, void *variable,
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_notify_one(unsigned long long size, volatile void *target)
+SATOMI_INLINE void satomi__atomic_notify_one(SATOMI_U64 size, volatile void *target)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
   if (size > 16)
@@ -1504,7 +1506,7 @@ SATOMI_INLINE void satomi__atomic_notify_one(unsigned long long size, volatile v
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_notify_all(unsigned long long size, volatile void *target)
+SATOMI_INLINE void satomi__atomic_notify_all(SATOMI_U64 size, volatile void *target)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
   if (size > 16)
@@ -1577,6 +1579,7 @@ SATOMI_INLINE void satomi__atomic_notify_all(unsigned long long size, volatile v
 #undef SATOMI_NULL
 #undef SATOMI_BOOL
 #undef SATOMI_ALIGNAS
+#undef SATOMI_U64
 #undef SATOMI_STATIC_ASSERT
 #undef SATOMI_CHECK_PRECONDITIONS
 #undef SATOMI_COMPILER_BARRIER
@@ -1589,14 +1592,36 @@ SATOMI_INLINE void satomi__atomic_notify_all(unsigned long long size, volatile v
 #undef SATOMI_MEMORY_LOAD_ACQUIRE_BARRIER
 #undef SATOMI_COMPILER_OR_MEMORY_BARRIER
 
-// small macro to do arbitrary default parameters
-#ifdef __cplusplus
-  #define SATOMI_DEFAULT_OR(T, def, ...) ([](){ T args[] = { def, __VA_ARGS__ }; return args[sizeof(args)/sizeof(T) - 1]; }())
-#else
-  #define SATOMI_DEFAULT_OR(T, def, ...) ((T[]){(def), __VA_ARGS__}[(sizeof((T[]){(def), __VA_ARGS__})/sizeof(T)) - 1])
-#endif
 
 #ifndef SATOMI_DO_NOT_DEFINE_MACROS
+
+  #define ATOMIC_BOOL_LOCK_FREE     2
+  #define ATOMIC_CHAR_LOCK_FREE     2
+  #define ATOMIC_CHAR16_T_LOCK_FREE 2
+  #define ATOMIC_CHAR32_T_LOCK_FREE 2
+  #define ATOMIC_WCHAR_T_LOCK_FREE  2
+  #define ATOMIC_SHORT_LOCK_FREE    2
+  #define ATOMIC_INT_LOCK_FREE      2
+  #define ATOMIC_LONG_LOCK_FREE     2
+  #define ATOMIC_LLONG_LOCK_FREE    2
+  #define ATOMIC_POINTER_LOCK_FREE  2
+  #define ATOMIC_CHAR8_T_LOCK_FREE  2
+
+  // small macro to do arbitrary default parameters
+  #ifdef __cplusplus
+    #ifdef _MSC_VER
+      #define SATOMI_DEFAULT_OR(T, def, ...) (def, ##__VA_ARGS__)
+    #else
+      #pragma GCC diagnostic push
+      #pragma GCC diagnostic ignored "-Wvariadic-macros"
+      #pragma GCC diagnostic ignored "-Wc++20-extensions"
+      
+      #define SATOMI_IGNORE(x) 
+      #define SATOMI_DEFAULT_OR(T, def, ...) (__VA_OPT__(SATOMI_IGNORE)(def) __VA_ARGS__)
+    #endif
+  #else
+    #define SATOMI_DEFAULT_OR(T, def, ...) ((T[]){(def), __VA_ARGS__}[(sizeof((T[]){(def), __VA_ARGS__})/sizeof(T)) - 1])
+  #endif
 
   // not actually useful anymore but added for completeness 
   #define kill_dependency(target) (target)
@@ -1655,6 +1680,11 @@ SATOMI_INLINE void satomi__atomic_notify_all(unsigned long long size, volatile v
 
   #define atomic_notify_all(target, ...) \
     satomi__atomic_notify_all(sizeof(*(target)), target, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__))
+
+
+  #if defined(__cplusplus) && !defined(_MSC_VER)
+    #pragma GCC diagnostic pop
+  #endif
 
 #endif
 
