@@ -76,7 +76,7 @@ extern "C"
 
   int __ulock_wait(__UINT32_TYPE__ operation, void *addr, __UINT64_TYPE__ value, __UINT32_TYPE__ timeout) __attribute__((weak_import));
   int __ulock_wake(__UINT32_TYPE__ operation, void *addr, __UINT64_TYPE__ wake_value) __attribute__((weak_import));
-  
+
 #else
 
   #error Unsupported platform
@@ -114,7 +114,7 @@ extern "C"
   void *__cdecl memcpy(void *destination, const void *source, SATOMI_U64 count);
   // safely reinterpreting arbitrary types to integrals (padding bits are NOT taken into account)
   #define SATOMI_MEMCPY(size, to, from) memcpy(to, from, size)
-  #define SATOMI_INLINE __forceinline 
+  #define SATOMI_INLINE __forceinline
 
   #define SATOMI_CHOOSE_SIZE(macro, size, base) \
     if (size == 1) { SATOMI_CHOOSE_MEMORY_ORDER(order, ret.v[0] = base##8, (macro(__int8))) }        \
@@ -145,10 +145,10 @@ extern "C"
     // x86/x64 hardware only emits memory barriers inside _Interlocked intrinsics
     #define SATOMI_COMPILER_OR_MEMORY_BARRIER() SATOMI_COMPILER_BARRIER()
     long _InterlockedIncrement(long volatile * _Addend);
-    
+
   #endif
 
-  // necessary in order to not inject hidden memory ordering guarantees (like with /volatile:ms) 
+  // necessary in order to not inject hidden memory ordering guarantees (like with /volatile:ms)
   // for more info https://learn.microsoft.com/en-us/cpp/intrinsics/arm-intrinsics?view=msvc-170#remarks
   __int8 __iso_volatile_load8(const volatile __int8 *location);
   __int16 __iso_volatile_load16(const volatile __int16 *location);
@@ -238,7 +238,7 @@ extern "C"
   #pragma clang diagnostic push
   #pragma clang diagnostic ignored "-Wc++17-extensions"
 
-  inline 
+  inline
 #else
   __attribute__((__common__))
 #endif
@@ -324,7 +324,7 @@ SATOMI_INLINE void satomi__atomic_signal_fence(memory_order order)
 
 
 
-SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size, 
+SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size,
   volatile void *target, void *expected, const void *desired, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -354,9 +354,9 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
     (void)e;
     (void)ret;
     unsigned char result = 0;
-    SATOMI_CHOOSE_MEMORY_ORDER(order, result = _InterlockedCompareExchange128, ((volatile __int64 *)target, 
+    SATOMI_CHOOSE_MEMORY_ORDER(order, result = _InterlockedCompareExchange128, ((volatile __int64 *)target,
       d.v[1], d.v[0], (__int64 *)expected))
-    
+
     return result != 0;
   }
 
@@ -372,7 +372,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
     order == memory_order_release ?  memory_order_relaxed : order));
   SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
   #undef SATOMI_ATOMIC_OP
-  
+
   else if (size == 16)
   {
     struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, e, d;
@@ -395,9 +395,9 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
     SATOMI_MEMCPY(size, expected, &e);
 
   #elif defined (__aarch64__)
-    
+
     unsigned success;
-    
+
     #define SATOMI_ATOMIC_ASM(load_order, store_order)                                \
       __asm__ __volatile__                                                            \
       (                                                                               \
@@ -426,12 +426,12 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
 
     return success;
   }
-  
+
   return 0;
 #endif
 }
 
-SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size, 
+SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size,
   volatile void *target, void *expected, const void *desired, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -552,8 +552,8 @@ SATOMI_INLINE void satomi__atomic_exchange(SATOMI_U64 size, void *variable,
       ".align 16\n\t"
       "1: lock; cmpxchg16b %[target_lo]\n\t"
       "jne 1b\n\t"
-      : [target_lo] "+m" (((volatile SATOMI_U64 *)target)[0]), 
-        [target_hi] "+m" (((volatile SATOMI_U64 *)target)[1]), 
+      : [target_lo] "+m" (((volatile SATOMI_U64 *)target)[0]),
+        [target_hi] "+m" (((volatile SATOMI_U64 *)target)[1]),
         "=&a" (ret.v[0]), "=&d" (ret.v[1])
       : "b" (v.v[0]), "c" (v.v[1])
       : "cc", "memory"
@@ -562,7 +562,7 @@ SATOMI_INLINE void satomi__atomic_exchange(SATOMI_U64 size, void *variable,
   #elif defined (__aarch64__)
 
     SATOMI_BOOL success;
-    
+
     #define SATOMI_ATOMIC_ASM(load_order, store_order)                            \
       __asm__ __volatile__                                                        \
       (                                                                           \
@@ -590,7 +590,7 @@ SATOMI_INLINE void satomi__atomic_exchange(SATOMI_U64 size, void *variable,
 
 
 
-SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size, 
+SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size,
   void *variable, const volatile void *target, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -661,7 +661,7 @@ SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size,
 
       #if defined(__AVX__)
 
-        // Intel Software Developer Manual Volume 3, Guaranteed Atomic Operations 
+        // Intel Software Developer Manual Volume 3, Guaranteed Atomic Operations
         // Processors supporting AVX guarantee aligned vector moves to be atomic.
         __asm__ __volatile__
         (
@@ -670,12 +670,12 @@ SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size,
           : [target] "m" (*(struct uint128__ *)target)
           : "memory"
         );
-        
+
       #else
 
         __asm__ __volatile__
         (
-          // store whatever is rbx/rcx in rax/rdx so that 
+          // store whatever is rbx/rcx in rax/rdx so that
           // even if we succeed to exchange we already have the value in rax/rdx
           "movq %%rbx, %%rax\n\t"
           "movq %%rcx, %%rdx\n\t"
@@ -684,11 +684,11 @@ SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size,
           : [target] "m" (*(struct uint128__ *)target)
           : "cc", "memory"
         );
-      
+
       #endif
 
     #elif defined(__aarch64__)
-      
+
       unsigned success;
 
       #define SATOMI_DEFINE_LOAD_MEMORY_ORDERS(acquire_order)            \
@@ -708,7 +708,7 @@ SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size,
         SATOMI_DEFINE_LOAD_MEMORY_ORDERS("")
       else
         SATOMI_DEFINE_LOAD_MEMORY_ORDERS("a")
-      
+
       #undef SATOMI_DEFINE_LOAD_MEMORY_ORDERS
 
     #endif
@@ -719,7 +719,7 @@ SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size,
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size, 
+SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
   volatile void *target, void *value, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -790,8 +790,8 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
 
     #if defined(__AVX__)
 
-      // Intel Software Developer Manual Volume 3, Guaranteed Atomic Operations 
-      // Processors supporting AVX guarantee aligned vector moves to be atomic.      
+      // Intel Software Developer Manual Volume 3, Guaranteed Atomic Operations
+      // Processors supporting AVX guarantee aligned vector moves to be atomic.
       __asm__ __volatile__
       (
         "vmovdqa %[value], %[storage]\n\t"
@@ -799,7 +799,7 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
         : [value] "x" (v)
         : "memory"
       );
-      
+
     #else
 
       __asm__ __volatile__
@@ -809,7 +809,7 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
         ".align 16\n\t"
         "1: lock; cmpxchg16b %[target_lo]\n\t"
         "jne 1b\n\t"
-        : [target_lo] "=m" (((volatile SATOMI_U64 *)target)[0]), 
+        : [target_lo] "=m" (((volatile SATOMI_U64 *)target)[0]),
           [target_hi] "=m" (((volatile SATOMI_U64 *)target)[1])
         : "b" (v.v[0]), "c" (v.v[1])
         : "cc", "rax", "rdx", "memory"
@@ -818,7 +818,7 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
     #endif
 
   #elif defined(__aarch64__)
-    
+
     unsigned success;
 
     #define SATOMI_DEFINE_STORE_MEMORY_ORDERS(store_order)                        \
@@ -838,7 +838,7 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
       SATOMI_DEFINE_STORE_MEMORY_ORDERS("")
     else
       SATOMI_DEFINE_STORE_MEMORY_ORDERS("l")
-    
+
     #undef SATOMI_DEFINE_STORE_MEMORY_ORDERS
 
   #endif
@@ -851,7 +851,7 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
 
 // only available for integral types (no floating point)
 // assumes 2's complement (which is the defacto standard)
-SATOMI_INLINE void satomi__atomic_fetch_add(SATOMI_U64 size, 
+SATOMI_INLINE void satomi__atomic_fetch_add(SATOMI_U64 size,
   void *variable, volatile void *target, void *operand, SATOMI_BOOL subtracting, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -891,7 +891,7 @@ SATOMI_INLINE void satomi__atomic_fetch_add(SATOMI_U64 size,
       // annoying casts to avoid any potential overflow warnings
       intermediate.v[0] = (__int64)((SATOMI_U64)ret.v[0] + (SATOMI_U64)o.v[0]);
       // carry over if an overflow has occured in the lower part
-      intermediate.v[1] = (__int64)((SATOMI_U64)ret.v[1] + (SATOMI_U64)o.v[1] + 
+      intermediate.v[1] = (__int64)((SATOMI_U64)ret.v[1] + (SATOMI_U64)o.v[1] +
         ((SATOMI_U64)intermediate.v[0] < (SATOMI_U64)ret.v[0]));
     }
     while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
@@ -917,12 +917,12 @@ SATOMI_INLINE void satomi__atomic_fetch_add(SATOMI_U64 size,
     SATOMI_MEMCPY(size, &o, operand);
     if (subtracting)
       o = -o;
-    
+
     do
     {
       intermediate = ret + o;
     } while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
-    
+
   #elif defined(__aarch64__)
 
     #if defined(__AARCH64EL__) || \
@@ -968,14 +968,14 @@ SATOMI_INLINE void satomi__atomic_fetch_add(SATOMI_U64 size,
         : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                                                \
         : "cc", "memory"                                                                                      \
       );
-    
+
     SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
     #undef SATOMI_ARG_LO
     #undef SATOMI_ARG_HI
     #undef SATOMI_ATOMIC_ASM
 
   #endif
-  
+
     if (variable != SATOMI_NULL)
       SATOMI_MEMCPY(size, variable, &ret);
   }
@@ -983,9 +983,9 @@ SATOMI_INLINE void satomi__atomic_fetch_add(SATOMI_U64 size,
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_fetch_and(SATOMI_U64 size, 
+SATOMI_INLINE void satomi__atomic_fetch_and(SATOMI_U64 size,
   void *variable, volatile void *target, void *operand, memory_order order)
-{    
+{
   SATOMI_CHECK_PRECONDITIONS(size, target);
   if (size > 16)
   {
@@ -1062,7 +1062,7 @@ SATOMI_INLINE void satomi__atomic_fetch_and(SATOMI_U64 size,
         : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                      \
         : "cc", "memory"                                                            \
       );
-    
+
     SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
     #undef SATOMI_ATOMIC_ASM
 
@@ -1074,7 +1074,7 @@ SATOMI_INLINE void satomi__atomic_fetch_and(SATOMI_U64 size,
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_fetch_or(SATOMI_U64 size, 
+SATOMI_INLINE void satomi__atomic_fetch_or(SATOMI_U64 size,
   void *variable, volatile void *target, void *operand, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -1152,7 +1152,7 @@ SATOMI_INLINE void satomi__atomic_fetch_or(SATOMI_U64 size,
         : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                      \
         : "cc", "memory"                                                            \
       );
-    
+
     SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
     #undef SATOMI_ATOMIC_ASM
 
@@ -1164,7 +1164,7 @@ SATOMI_INLINE void satomi__atomic_fetch_or(SATOMI_U64 size,
 #endif
 }
 
-SATOMI_INLINE void satomi__atomic_fetch_xor(SATOMI_U64 size, 
+SATOMI_INLINE void satomi__atomic_fetch_xor(SATOMI_U64 size,
   void *variable, volatile void *target, void *operand, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -1241,7 +1241,7 @@ SATOMI_INLINE void satomi__atomic_fetch_xor(SATOMI_U64 size,
         : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                      \
         : "cc", "memory"                                                            \
       );
-    
+
     SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
     #undef SATOMI_ATOMIC_ASM
 
@@ -1295,7 +1295,7 @@ SATOMI_INLINE void satomi__atomic_fetch_xor(SATOMI_U64 size,
 
 #endif
 
-SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable, 
+SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
   volatile void *target, void *expected, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
@@ -1335,7 +1335,7 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
   }
 
   if (variable != SATOMI_NULL)
-    SATOMI_MEMCPY(size, variable, &ret);  
+    SATOMI_MEMCPY(size, variable, &ret);
 
 #else
 
@@ -1355,7 +1355,7 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
   int *address = SATOMI_NULL;
   int compare;
 
-  if (size >= sizeof(slot->version) && 
+  if (size >= sizeof(slot->version) &&
     (((__UINTPTR_TYPE__)target) % sizeof(int)) == 0)
   {
     address = (int *)target;
@@ -1389,11 +1389,11 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
 
     if (finish)
       break;
-  
+
   #if defined (LINUX) || defined (__linux__)
     __INT64_TYPE__ result;
     #define SATOMI_WAIT_OP (0 /*wait op*/ | 128 /*private flag*/)
-    
+
   #if defined(__x86_64__)
 
     __asm__ __volatile__
@@ -1406,7 +1406,7 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
       "syscall\n\t"
       "mov %%rax, %[result]"
       : [result] "=r" (result)
-      : [syscall_number] "Z" (SATOMI_SYS_FUTEX), [address] "r" (address), 
+      : [syscall_number] "Z" (SATOMI_SYS_FUTEX), [address] "r" (address),
         [futex_op] "Z" (SATOMI_WAIT_OP), [compare] "r" (compare), [timeout] "Z" (SATOMI_NULL)
       : "rax", "rdi", "rsi", "rdx", "r10"
     );
@@ -1424,13 +1424,13 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
       "svc #0\n\t"
       "mov %x[result], x0"
       : [result] "=r" (result)
-      : [syscall_number] "M" (SATOMI_SYS_FUTEX), [address] "r" (address), 
+      : [syscall_number] "M" (SATOMI_SYS_FUTEX), [address] "r" (address),
         [futex_op] "N" (SATOMI_WAIT_OP), [compare] "r" (compare), [timeout] "N" (SATOMI_NULL)
       : "w8", "x0", "x1", "x2", "x3"
     );
 
   #endif
-    
+
     #undef SATOMI_WAIT_OP
 
     if (!result && (-result) != 11 /*EAGAIN*/)
@@ -1478,7 +1478,7 @@ SATOMI_INLINE void satomi__atomic_notify_one(SATOMI_U64 size, volatile void *tar
   int *address = SATOMI_NULL;
   int waiters_to_wake_up = 1;
 
-  if (size >= sizeof(slot->version) && 
+  if (size >= sizeof(slot->version) &&
     (((__UINTPTR_TYPE__)target) % sizeof(int)) == 0)
   {
     address = (int *)target;
@@ -1500,7 +1500,7 @@ SATOMI_INLINE void satomi__atomic_notify_one(SATOMI_U64 size, volatile void *tar
 
     int extra = waiters_to_wake_up == __INT_MAX__ ? SATOMI_ULF_WAKE_ALL : 0;
     __ulock_wake(SATOMI_UL_COMPARE_AND_WAIT | extra, address, 0);
-    
+
   #endif
 
 #endif
@@ -1533,7 +1533,7 @@ SATOMI_INLINE void satomi__atomic_notify_all(SATOMI_U64 size, volatile void *tar
 
   int *address = SATOMI_NULL;
 
-  if (size >= sizeof(slot->version) && 
+  if (size >= sizeof(slot->version) &&
     (((__UINTPTR_TYPE__)target) % sizeof(int)) == 0)
   {
     address = (int *)target;
@@ -1609,21 +1609,20 @@ SATOMI_INLINE void satomi__atomic_notify_all(SATOMI_U64 size, volatile void *tar
 
   // small macro to do arbitrary default parameters
   #ifdef __cplusplus
-    #ifdef _MSC_VER
-      #define SATOMI_DEFAULT_OR(T, def, ...) (def, ##__VA_ARGS__)
-    #else
+    #ifdef __GNUC__
       #pragma GCC diagnostic push
+      #pragma GCC diagnostic ignored "-Wpedantic"
       #pragma GCC diagnostic ignored "-Wvariadic-macros"
       #pragma GCC diagnostic ignored "-Wc++20-extensions"
-      
-      #define SATOMI_IGNORE(x) 
-      #define SATOMI_DEFAULT_OR(T, def, ...) (__VA_OPT__(SATOMI_IGNORE)(def) __VA_ARGS__)
     #endif
+
+    #define SATOMI_IGNORE(x)
+    #define SATOMI_DEFAULT_OR(T, def, ...) (__VA_OPT__(SATOMI_IGNORE)(def) __VA_ARGS__)
   #else
     #define SATOMI_DEFAULT_OR(T, def, ...) ((T[]){(def), __VA_ARGS__}[(sizeof((T[]){(def), __VA_ARGS__})/sizeof(T)) - 1])
   #endif
 
-  // not actually useful anymore but added for completeness 
+  // not actually useful anymore but added for completeness
   #define kill_dependency(target) (target)
 
   #define atomic_is_lock_free(atomic) (sizeof(atomic) <= 16)
@@ -1682,7 +1681,7 @@ SATOMI_INLINE void satomi__atomic_notify_all(SATOMI_U64 size, volatile void *tar
     satomi__atomic_notify_all(sizeof(*(target)), target, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__))
 
 
-  #if defined(__cplusplus) && !defined(_MSC_VER)
+  #if defined(__cplusplus) && defined(__GNUC__)
     #pragma GCC diagnostic pop
   #endif
 

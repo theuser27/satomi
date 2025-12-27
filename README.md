@@ -25,7 +25,7 @@ If you already know how to use atomics, the API should look familiar, however th
 
 In the C99 version:
 
-1. Because C doesn't have arbitrary generics and not every compiler makes extensions for this purpose, wherever there's a `T` return value, the store needs to be passed as an out-parameter (i.e. `atomic_load(&variable, &atomic)`). Those out-parameters can also be `NULL`.
+1. Because C doesn't have arbitrary generics and not every compiler has extensions for this purpose, wherever there's a `T` return value, the store needs to be passed as an out-parameter, i.e. `atomic_load(&variable, &atomic)`. Those out-parameters can also be `NULL`.
 2. The API is provided through macros that wrap the same underlying functions with a `satomi__` prefix. There's a customisation point `SATOMI_DO_NOT_DEFINE_MACROS` which will allow you to define your own macros if the provided ones are not suitable. There's also `SATOMI_DO_NOT_DEFINE_MEMORY_ORDER` to avoid memory order enum definition.
 3. `atomic_wait/notify_one/notify_all` have been added from the C++20 API.
 
