@@ -36,6 +36,20 @@
   #define SATOMI_ASSERT(condition) assert(condition)
 #endif
 
+#ifndef SATOMI_DO_NOT_DEFINE_MEMORY_ORDER
+
+  typedef enum memory_order
+  {
+    memory_order_relaxed,
+    memory_order_consume,
+    memory_order_acquire,
+    memory_order_release,
+    memory_order_acq_rel,
+    memory_order_seq_cst
+  } memory_order;
+
+#endif
+
 #ifndef NULL
   #define SATOMI_NULL (0)
 #else
@@ -214,11 +228,13 @@ extern "C"
     else if (order == memory_order_release) { SATOMI_ATOMIC_ASM("", "l") } \
     else if (order == memory_order_acq_rel || order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("a", "l") } \
     else { __builtin_trap(); }
+
   #define SATOMI_CHOOSE_SIZE(size, macro)                            \
     if (size == 1) { macro(__UINT8_TYPE__); }      \
     else if (size == 2) { macro(__UINT16_TYPE__); }\
     else if (size == 4) { macro(__UINT32_TYPE__); }\
     else if (size == 8) { macro(__UINT64_TYPE__); }
+
   #define SATOMI_CHECK_ALIGNMENT(alignment, x) (void)((decltype(sizeof(int))(&x) % alignment) == 0 || (__builtin_trap(), 1))
 
 #endif
@@ -242,7 +258,6 @@ extern "C"
 #else
   __attribute__((__common__))
 #endif
-
   struct satomi__waiting_slot satomi__waiter_list[SATOMI_WAITING_LIST_COUNT];
 
 #if defined(__cplusplus) && defined(__clang__)
@@ -253,23 +268,12 @@ extern "C"
 
 #endif
 
-#ifndef SATOMI_DO_NOT_DEFINE_MEMORY_ORDER
 
-  typedef enum memory_order
-  {
-    memory_order_relaxed,
-    memory_order_consume,
-    memory_order_acquire,
-    memory_order_release,
-    memory_order_acq_rel,
-    memory_order_seq_cst
-  } memory_order;
-
-#endif
 
 SATOMI_INLINE void satomi__atomic_thread_fence(memory_order order)
 {
 #if defined(_MSC_VER) && !defined(__clang__)
+
   SATOMI_COMPILER_BARRIER();
   #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
     if (order == memory_order_acquire || order == memory_order_consume)
@@ -289,7 +293,9 @@ SATOMI_INLINE void satomi__atomic_thread_fence(memory_order order)
     #pragma warning(pop)
     }
   #endif
+
 #else
+
   #if defined (__x86_64__)
     if (order == memory_order_seq_cst)
     {
@@ -307,17 +313,22 @@ SATOMI_INLINE void satomi__atomic_thread_fence(memory_order order)
         __asm__ __volatile__ ("dmb ish\n\t" ::: "memory");
     }
   #endif
+
 #endif
 }
 
 SATOMI_INLINE void satomi__atomic_signal_fence(memory_order order)
 {
 #if defined(_MSC_VER) && !defined(__clang__)
+
   if (order != memory_order_relaxed)
     SATOMI_COMPILER_BARRIER();
+
 #else
+
   if (order != memory_order_relaxed)
     __asm__ __volatile__ ("" ::: "memory");
+
 #endif
 }
 
@@ -336,6 +347,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
   }
 
 #if defined(_MSC_VER) && !defined(__clang__)
+
   (void)order;
 
   // this works because windows only works on little-endian machines

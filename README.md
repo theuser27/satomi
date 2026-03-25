@@ -8,16 +8,14 @@ Completely lock-less atomic headers:
 `satomi.hpp` for C++20 (mirroring `<atomic>` which is also `constexpr`)
 
 ## Why does this exist?
-TL;DR: portable lock-less 16 byte atomics don't exist (with the exception of [boost.atomic](https://github.com/boostorg/atomic)) at the time of writing.
+Portable lock-less 16 byte atomics on x86 don't exist (with the exception of [boost.atomic](https://github.com/boostorg/atomic)) at the time of writing. This library was created to unify behaviours across compilers, while being simple to use and maintain.
 
-Every compiler has a different opinion on lock-less 16 byte atomics and they rarely align with the others. From the big 3: 
- - Clang supports them but they are hidden behind a compiler flag (`-mcx16`), 
+From the big 3: 
+ - Clang is the only one with support for them but they are hidden behind a compiler flag (`-mcx16`), 
  - MSVC doesn't guarantee them because changing that will constitute an [ABI break](https://developercommunity.visualstudio.com/t/optimize-stdatomic-for-16-byte-types-use-interlock/498970#T-N1528823) (but they're enabled in atomic_ref), 
- - GCC [doesn't even honour compiler flags](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=80878) to force generation of desired assembly, so the only way to get the correct behaviour is to use the old `__sync` builtins, which the `__atomic` builtins were supposed to replace. 
+ - GCC [doesn't honour -mcx16](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=80878) to force generation of desired assembly, so the only way to get the correct behaviour is to use the old `__sync` builtins, which the `__atomic` builtins were supposed to replace. 
 
 For a more in-depth analysis I recommend reading [Timur Doumler's blog post](https://timur.audio/dwcas-in-c) on the matter.
-
-This library was created to unify behaviours across compilers, while being simple to use and maintain.
 
 ---
 
@@ -36,8 +34,8 @@ In the C++20 version:
 3. No operators are overloaded to discourage the bad habit of treating atomics like regular variables.
 
 ## Warnings and Caveats
-1. If you're using the C99 version of the library, please **MAKE SURE** you **CLEAR PADDING** bits otherwise `compare_exchange`s will **FAIL** even if the value-representation matches. In the C++20 version that's taken care of by intrinsics that are not available in C99.
-2. Only x86_64 and arm64 are supported for now.
+1. If you're using the C99 version of the library, please **MAKE SURE TO CLEAR PADDING** bits otherwise `compare_exchange`s will **FAIL** even if the value-representation matches. In the C++20 version that's taken care of by intrinsics that are not available in C99.
+2. Only x86-64 and arm64 are supported.
 3. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks. Create your own mechanisms with the atomics here (using the wait/notify primitives) if you have such a use case.
 4. When using the free functions or C++20 atomic_ref to do atomic operations you have to make sure your variables are self-aligned (meaning `address of object` % `size of object` == 0). If alignment isn't honoured the functions WILL abort (`SIGILL`/`SIGTRAP`) the program because you will get UB otherwise.
 5. On gcc/clang this library currently depends on libc for atomic intrisincs for <= 8 bytes, which are universally lock-less, but generally do not inline corresponding instructions on arm64 (will most likely change this in the future).
@@ -47,7 +45,7 @@ In the C++20 version:
 
 ### C
 ```c
-int a = 1;
+volatile int a = 1;
 int add = 1;
 atomic_fetch_add(NULL, &a, &add, memory_order_relaxed);
 add = 2;
@@ -55,19 +53,19 @@ atomic_fetch_sub(NULL, &a, &add, memory_order_acq_rel);
 int b;
 atomic_load(&b, &a, memory_order_acquire);
 
-uint16_t would_like_to_be_atomic = 0;
+uint16_t wants_to_be_atomic = 0;
 uint16_t store = 5;
-atomic_store(&would_like_to_be_atomic, &store, memory_order_seq_cst);
-uint16_t atomically_loaded;
-atomic_load(&atomically_loaded, &would_like_to_be_atomic, memory_order_relaxed);
+atomic_store(&wants_to_be_atomic, &store, memory_order_seq_cst);
+uint16_t c;
+atomic_load(&c, &wants_to_be_atomic, memory_order_relaxed);
 store = 2;
-atomic_compare_exchange_strong(&would_like_to_be_atomic, &atomically_loaded, &store, memory_order_acq_rel);
+atomic_compare_exchange_strong(&wants_to_be_atomic, &c, &store, memory_order_acq_rel);
 
-double c = 32.0;
-double d;
-atomic_load(&d, &c, memory_order_acquire);
+volatile double d = 32.0;
+double e;
+atomic_load(&e, &d, memory_order_acquire);
 // some math...
-atomic_store(&c, &d, memory_order_release);
+atomic_store(&d, &e, memory_order_release);
 
 #if defined(_MSC_VER) && !defined(__clang__)
   #define ALIGNAS(x) __declspec(align(x))
@@ -91,22 +89,20 @@ atomic_compare_exchange_weak(&uuid, &uuid_copy, &new_uuid, memory_order_acq_rel)
 
 ### C++
 ```c++
-namespace sat = satomi;
+satomi::atomic a = 1;
+a.fetch_add(1, satomi::memory_order_relaxed);
+a.fetch_sub(2, satomi::memory_order_acq_rel);
+int b = a.load(satomi::memory_order_acquire);
 
-sat::atomic a = 1;
-a.fetch_add(1, sat::memory_order_relaxed);
-a.fetch_sub(2, sat::memory_order_acq_rel);
-int b = a.load(sat::memory_order_acquire);
+uint16_t wants_to_be_atomic = 0;
+satomi::atomic_store(wants_to_be_atomic, uint16_t(5), satomi::memory_order_seq_cst);
+uint16_t c = satomi::atomic_load(wants_to_be_atomic, satomi::memory_order_relaxed);
+satomi::atomic_compare_exchange_strong(wants_to_be_atomic, c, uint16_t(2), satomi::memory_order_acq_rel);
 
-uint16_t would_like_to_be_atomic = 0;
-sat::atomic_store(would_like_to_be_atomic, uint16_t(5), sat::memory_order_seq_cst);
-uint16_t atomically_loaded = sat::atomic_load(would_like_to_be_atomic, sat::memory_order_relaxed);
-sat::atomic_compare_exchange_strong(would_like_to_be_atomic, atomically_loaded, uint16_t(2), sat::memory_order_acq_rel);
-
-sat::atomic<double> c = 32.0;
-auto d = c.load(sat::memory_order_acquire);
+satomi::atomic<double> d = 32.0;
+auto e = d.load(satomi::memory_order_acquire);
 // some math...
-c.store(d, sat::memory_order_release);
+d.store(e, satomi::memory_order_release);
 
 struct alignas(16) uuid_t
 {
@@ -118,7 +114,7 @@ struct alignas(16) uuid_t
   uint64_t part_4;
 } uuid = { 0x56264c8d, 0xbb85, 0x44dc, 0xb3ddf6926baad9ee };
 
-sat::atomic_ref uuid_ref{ uuid };
-auto uuid_copy = uuid_ref.load(sat::memory_order_relaxed);
-uuid_ref.compare_exchange_weak(uuid_copy, { 0xc34d62f8, 0x8b76, 0x425c, 0x99e88c4bd60f227c }, sat::memory_order_acq_rel);
+satomi::atomic_ref uuid_ref{ uuid };
+auto uuid_copy = uuid_ref.load(satomi::memory_order_relaxed);
+uuid_ref.compare_exchange_weak(uuid_copy, { 0xc34d62f8, 0x8b76, 0x425c, 0x99e88c4bd60f227c }, satomi::memory_order_acq_rel);
 ```
