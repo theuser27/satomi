@@ -23,13 +23,22 @@
 
 // For more information, please refer to <https://unlicense.org>
 
-#ifndef SATOMI_H
-#define SATOMI_H
+#pragma once
 
-// Customisation points are:
-// 1. SATOMI_ASSERT - basic assert to avoid using <assert.h>
-// 2. SATOMI_DO_NOT_DEFINE_MEMORY_ORDER - define to skip memory_order enum
-// 3. SATOMI_DO_NOT_DEFINE_MACROS - define to skip usage macros
+// The following macros can be defined by the user:
+// 1. SATOMI_ASSERT(...) - basic assert to avoid including <assert.h>
+// 2. SATOMI_DO_NOT_DEFINE_MEMORY_ORDER - skip defining memory_order enum
+// 3. SATOMI_DO_NOT_DEFINE_MACROS - skip defining usage macros
+// 4. SATOMI_ARM_USE_LSE128 - to use SWPP* instructions for 128 bit atomic_exchange/store
+//    Unfortunately no compiler currently provides a macro definition to check for this automatically so the user has to define something
+//    and '+lse128' still needs to be enabled otherwise it will fail to compile, i.e. '-march=armv9.4-a+lse128'
+//    https://developer.arm.com/documentation/ddi0602/2024-03/Base-Instructions/SWPP--SWPPA--SWPPAL--SWPPL--Swap-quadword-in-memory-
+// 5. SATOMI_BREAK_ARM_MSVC_ABI_COMPATIBILITY - forces NON-conformance on clang/mingw with MSVC STL for ARM64 (without LSE) on Windows.
+//    By default an extra memory barrier (dmb ish) will be inserted after any successful stores
+//    (atomic_compare_exchange_*, atomic_exchange, atomic_store, atomic_fetch_*) if memory_order == seq_cst.
+//    Use this if you want to avoid the cost of the extra fence if you're not interfacing with the MSVC STL. For more info:
+//    https://reviews.llvm.org/D141748
+//    https://github.com/llvm/llvm-project/commit/1ea201d73be2fdf03347e9c6be09ebed5f8e0e00
 
 #ifndef SATOMI_ASSERT
   #include <assert.h>
@@ -48,12 +57,6 @@
     memory_order_seq_cst
   } memory_order;
 
-#endif
-
-#ifndef NULL
-  #define SATOMI_NULL (0)
-#else
-  #define SATOMI_NULL NULL
 #endif
 
 #ifdef __cplusplus
@@ -105,8 +108,6 @@ extern "C"
   #define SATOMI_U64 __UINT64_TYPE__
 #endif
 
-#define SATOMI_STATIC_ASSERT(condition, message) typedef char satomi__static_assertion_##message[(condition)?1:-1]
-
 #ifdef __cplusplus
   #define SATOMI_BOOL bool
 #else
@@ -124,6 +125,7 @@ extern "C"
   // pragma to avoid deprecation warnings
   #define SATOMI_COMPILER_BARRIER() _Pragma("warning(push)") _Pragma("warning(disable : 4996)") _ReadWriteBarrier() _Pragma("warning(pop)")
   __declspec(noreturn) void __fastfail(unsigned int code);
+  #pragma intrinsic(__fastfail)
   #define SATOMI_TRAP() __fastfail(/*FAST_FAIL_FATAL_APP_EXIT*/ 7)
   void *__cdecl memcpy(void *destination, const void *source, SATOMI_U64 count);
   // safely reinterpreting arbitrary types to integrals (padding bits are NOT taken into account)
@@ -136,7 +138,7 @@ extern "C"
     else if (size == 4) { SATOMI_CHOOSE_MEMORY_ORDER(order, ret.v[0] = base, (macro(long))) }        \
     else if (size == 8) { SATOMI_CHOOSE_MEMORY_ORDER(order, ret.v[0] = base##64, (macro(__int64))) }
 
-  #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
+  #if defined(_M_ARM64) || defined(_M_ARM64EC)
 
     __int64 __ldrexd(const volatile __int64 *);
     void __dmb(unsigned int _Type);
@@ -149,8 +151,7 @@ extern "C"
       else if (order == memory_order_release) { X##_rel args; } \
       else if (order == memory_order_acq_rel || order == memory_order_seq_cst) { X args; } \
       else { __fastfail(/*FAST_FAIL_FATAL_APP_EXIT*/ 7); }
-    #define SATOMI_COMPILER_OR_MEMORY_BARRIER() __dmb(0xB)
-    #define SATOMI_MEMORY_LOAD_ACQUIRE_BARRIER() __dmb(0x9)
+    #define SATOMI_COMPILER_OR_MEMORY_BARRIER() __dmb(/*_ARM64_BARRIER_ISH*/ 0xB)
 
   #else
 
@@ -209,12 +210,13 @@ extern "C"
 
 #else
 
-  SATOMI_STATIC_ASSERT(sizeof(SATOMI_U64) == sizeof(void *), Only_64_bit_arches_are_supported);
-
   #if defined(__GNUC__) && !defined(__clang__)
     #pragma GCC diagnostic push
     #pragma GCC diagnostic ignored "-Wstringop-overflow"
     #pragma GCC diagnostic ignored "-Wstringop-overread"
+  #elif defined(__clang__)
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wvariadic-macro-arguments-omitted"
   #endif
 
   #define SATOMI_TRAP() __builtin_trap()
@@ -222,18 +224,20 @@ extern "C"
   #define SATOMI_MEMCPY(size, to, from) __builtin_memcpy(to, from, size)
   #define SATOMI_INLINE inline __attribute__((always_inline))
 
-  #define SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)\
-    if (order == memory_order_relaxed) { SATOMI_ATOMIC_ASM("", "") } \
-    else if (order == memory_order_consume || order == memory_order_acquire) { SATOMI_ATOMIC_ASM("a", "") } \
-    else if (order == memory_order_release) { SATOMI_ATOMIC_ASM("", "l") } \
-    else if (order == memory_order_acq_rel || order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("a", "l") } \
-    else { __builtin_trap(); }
+  #if defined(_WIN32) && !defined(SATOMI_BREAK_ARM_MSVC_ABI_COMPATIBILITY)
+    // stupid ABI fence by a stupid company
+    #define SATOMI_MSVC_STL_SEQ_CST_FENCE "dmb ish\n\t"
+  #else
+    #define SATOMI_MSVC_STL_SEQ_CST_FENCE ""
+  #endif
 
-  #define SATOMI_CHOOSE_SIZE(size, macro)                            \
-    if (size == 1) { macro(__UINT8_TYPE__); }      \
-    else if (size == 2) { macro(__UINT16_TYPE__); }\
-    else if (size == 4) { macro(__UINT32_TYPE__); }\
-    else if (size == 8) { macro(__UINT64_TYPE__); }
+  #define SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, ...)\
+    if (order == memory_order_relaxed) { SATOMI_ATOMIC_ASM("", "", "", __VA_ARGS__) } \
+    else if (order == memory_order_consume || order == memory_order_acquire) { SATOMI_ATOMIC_ASM("a", "", "", __VA_ARGS__) } \
+    else if (order == memory_order_release) { SATOMI_ATOMIC_ASM("", "l", "", __VA_ARGS__) } \
+    else if (order == memory_order_acq_rel) { SATOMI_ATOMIC_ASM("a", "l", "", __VA_ARGS__) } \
+    else if (order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("a", "l", SATOMI_MSVC_STL_SEQ_CST_FENCE, __VA_ARGS__) } \
+    else { __builtin_trap(); }
 
   #define SATOMI_CHECK_ALIGNMENT(alignment, x) (void)((decltype(sizeof(int))(&x) % alignment) == 0 || (__builtin_trap(), 1))
 
@@ -275,9 +279,9 @@ SATOMI_INLINE void satomi__atomic_thread_fence(memory_order order)
 #if defined(_MSC_VER) && !defined(__clang__)
 
   SATOMI_COMPILER_BARRIER();
-  #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
+  #if defined(_M_ARM64) || defined(_M_ARM64EC)
     if (order == memory_order_acquire || order == memory_order_consume)
-      SATOMI_MEMORY_LOAD_ACQUIRE_BARRIER();
+      __dmb(/*_ARM64_BARRIER_ISHLD*/ 0x9);
     else
       SATOMI_COMPILER_OR_MEMORY_BARRIER();
   #else
@@ -285,8 +289,8 @@ SATOMI_INLINE void satomi__atomic_thread_fence(memory_order order)
     {
     #pragma warning(push)
     #pragma warning(disable : 6001)  // "Using uninitialized memory 'guard'"
-    #pragma warning(disable : 28113) // "Accessing a local variable guard via an Interlocked function: This is an unusual
-                                      // usage which could be reconsidered."
+    #pragma warning(disable : 28113) // "Accessing a local variable guard via an Interlocked function:
+                                     // This is an unusual usage which could be reconsidered."
       volatile long guard;
       (void)_InterlockedIncrement(&guard);
       SATOMI_COMPILER_BARRIER();
@@ -294,25 +298,25 @@ SATOMI_INLINE void satomi__atomic_thread_fence(memory_order order)
     }
   #endif
 
-#else
+#elif defined (__x86_64__)
 
-  #if defined (__x86_64__)
-    if (order == memory_order_seq_cst)
-    {
-      unsigned char dummy = 0u;
-      __asm__ __volatile__ ("lock; notb %0" : "+m" (dummy) : : "memory");
-    }
-    else if (order != memory_order_relaxed)
-      __asm__ __volatile__ ("" ::: "memory");
-  #else
-    if (order != memory_order_relaxed)
-    {
-      if (order == memory_order_consume || order == memory_order_acquire)
-        __asm__ __volatile__ ("dmb ishld\n\t" ::: "memory");
-      else
-        __asm__ __volatile__ ("dmb ish\n\t" ::: "memory");
-    }
-  #endif
+  if (order == memory_order_seq_cst)
+  {
+    unsigned char dummy = 0u;
+    __asm__ __volatile__ ("lock; notb %0" : "+m" (dummy) : : "memory");
+  }
+  else if (order != memory_order_relaxed)
+    __asm__ __volatile__ ("" ::: "memory");
+
+#elif defined(__aarch64__)
+
+  if (order != memory_order_relaxed)
+  {
+    if (order == memory_order_consume || order == memory_order_acquire)
+      __asm__ __volatile__ ("dmb ishld\n\t" ::: "memory");
+    else
+      __asm__ __volatile__ ("dmb ish\n\t" ::: "memory");
+  }
 
 #endif
 }
@@ -334,7 +338,7 @@ SATOMI_INLINE void satomi__atomic_signal_fence(memory_order order)
 
 
 
-
+// Don't forget to clear padding!
 SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size,
   volatile void *target, void *expected, const void *desired, memory_order order)
 {
@@ -350,7 +354,6 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
 
   (void)order;
 
-  // this works because windows only works on little-endian machines
   struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret, d, e;
   d.v[0] = 0;
   e.v[0] = 0;
@@ -377,72 +380,188 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
   SATOMI_MEMCPY(size, expected, &ret);
   return 0;
 
-#else
+#elif defined (__x86_64__)
 
-  #define SATOMI_ATOMIC_OP(INT) INT d; SATOMI_MEMCPY(size, &d, desired); return __atomic_compare_exchange_n((volatile INT *)target, (INT *)expected, d,\
-    0, (int)order, (int)(order == memory_order_acq_rel || order == memory_order_seq_cst ? memory_order_acquire : \
-    order == memory_order_release ?  memory_order_relaxed : order));
-  SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
-  #undef SATOMI_ATOMIC_OP
+  #define SATOMI_ATOMIC_ASM(type, affix)                  \
+    __asm__ __volatile__                                  \
+    (                                                     \
+      "lock; cmpxchg" affix " %[desired], %[target]\n\t"  \
+      "sete %[success]"                                   \
+      : [target] "+m" (*(type *)target),                  \
+        "+a" (*(type *)expected), [success] "=q" (success)\
+      : [desired] "q" (*(type *)desired)                  \
+      : "cc", "memory"                                    \
+    )
 
+  SATOMI_BOOL success = 0;
+  if (size == 1) { SATOMI_ATOMIC_ASM(__UINT8_TYPE__, "b"); }
+  else if (size == 2) { SATOMI_ATOMIC_ASM(__UINT16_TYPE__, "w"); }
+  else if (size == 4) { SATOMI_ATOMIC_ASM(__UINT32_TYPE__, "l"); }
+  else if (size == 8) { SATOMI_ATOMIC_ASM(__UINT64_TYPE__, "q"); }
   else if (size == 16)
   {
-    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, e, d;
+    SATOMI_U64 e[2], d[2];
     SATOMI_MEMCPY(size, &e, expected);
     SATOMI_MEMCPY(size, &d, desired);
 
-  #if defined (__x86_64__)
-
-    SATOMI_BOOL success;
-    (void)ret;
     __asm__ __volatile__
     (
       "lock; cmpxchg16b %[target]\n\t"
       "sete %[success]\n\t"
-      : [target] "+m" (*(struct uint128__ *)target), "+a" (e.v[0]), "+d" (e.v[1]), [success] "=q" (success)
-      : "b" (d.v[0]), "c" (d.v[1])
+      : [target] "+m" (*(__UINT64_TYPE__ *)target),
+        "+a" (e[0]), "+d" (e[1]), [success] "=q" (success)
+      : "b" (d[0]), "c" (d[1])
       : "cc", "memory"
     );
 
     SATOMI_MEMCPY(size, expected, &e);
+  }
 
-  #elif defined (__aarch64__)
+  return success;
 
-    unsigned success;
+  #undef SATOMI_ATOMIC_ASM
 
-    #define SATOMI_ATOMIC_ASM(load_order, store_order)                                \
-      __asm__ __volatile__                                                            \
-      (                                                                               \
-        "1:\n\t"                                                                      \
-        "ld" load_order "xp %x[original_0], %x[original_1], %[target]\n\t"            \
-        "cmp %x[original_0], %x[expected_0]\n\t"                                      \
-        "ccmp %x[original_1], %x[expected_1], #0, eq\n\t"                             \
-        "b.ne 2f\n\t"                                                                 \
-        "st" store_order "xp %w[success], %x[desired_0], %x[desired_1], %[target]\n\t"\
-        "cbnz %w[success], 1b\n\t"                                                    \
-        "2:\n\t"                                                                      \
-        "cset %w[success], eq\n\t"                                                    \
-        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),     \
-          [original_0] "=&r" (ret.v[0u]), [original_1] "=&r" (ret.v[1u])              \
-        : [desired_0] "r" (d.v[0u]), [desired_1] "r" (d.v[1u]),                       \
-          [expected_0] "r" (e.v[0u]), [expected_1] "r" (e.v[1u])                      \
-        : "cc", "memory"                                                              \
+#elif defined(__aarch64__)
+
+  // builtin CAS support with ARM LSE 1
+  #ifdef __ARM_FEATURE_ATOMICS
+
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, _, type, affix, modifier)                          \
+      __asm__ __volatile__                                                                                \
+      (                                                                                                   \
+        "cas" load_order store_order affix " " modifier "[expected], " modifier "[desired], %[target]\n\t"\
+        : [target] "+Q" (*(type *)target), [expected] "+r" (ret)                                          \
+        : [desired] "r" (*(type *)desired)                                                                \
+        : "memory"                                                                                        \
       );
 
-    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
+    #define SATOMI_PASTE_BLOCK(order, type, ...)                \
+      type e, ret;                                              \
+      SATOMI_MEMCPY(size, &e, expected);                        \
+      ret = e;                                                  \
+      SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, type, __VA_ARGS__); \
+      SATOMI_MEMCPY(size, expected, &ret);                      \
+      return e == ret
+
+    if (size == 1) { SATOMI_PASTE_BLOCK(order, __UINT8_TYPE__, "b", "%w"); }
+    else if (size == 2) { SATOMI_PASTE_BLOCK(order, __UINT16_TYPE__, "h", "%w"); }
+    else if (size == 4) { SATOMI_PASTE_BLOCK(order, __UINT32_TYPE__, "", "%w"); }
+    else if (size == 8) { SATOMI_PASTE_BLOCK(order, __UINT64_TYPE__, "", "%x"); }
+    else if (size == 16)
+    {
+      SATOMI_U64 e[2], d[2];
+      SATOMI_MEMCPY(size, &e, expected);
+      SATOMI_MEMCPY(size, &d, desired);
+
+      // copies values to specific registers
+      // on gcc hard register constraints can be used but those are not supported on clang
+      // hardcoding caller saved registers (as per ARM64 linux ABI)
+      // because ARM expects arguments to start at an even register and be contiguous
+      register SATOMI_U64 x8 asm ("x8") = e[0];
+      register SATOMI_U64 x9 asm ("x9") = e[1];
+      register SATOMI_U64 x10 asm ("x10") = d[0];
+      register SATOMI_U64 x11 asm ("x11") = d[1];
+
+      #undef SATOMI_ATOMIC_ASM
+      #define SATOMI_ATOMIC_ASM(load_order, store_order, ...)                                                         \
+        __asm__ __volatile__                                                                                          \
+        (                                                                                                             \
+          "casp" load_order store_order " %x[expected_0], %x[expected_1], %x[desired_0], %x[desired_1], %[target]\n\t"\
+          : [target] "+Q" (*(SATOMI_U64 *)target), [expected_0] "+r" (x8), [expected_1] "+r" (x9)                     \
+          : [desired_0] "r" (x10), [desired_1] "r" (x11)                                                              \
+          : "cc", "memory"                                                                                            \
+        );
+
+      SATOMI_CHOOSE_MEMORY_ORDER_ASM(order);
+
+      SATOMI_BOOL success = e[0] == x8 && e[1] == x9;
+      e[0] = x8;
+      e[1] = x9;
+      SATOMI_MEMCPY(size, expected, &e);
+      return success;
+    }
+
+    #undef SATOMI_PASTE_BLOCK
     #undef SATOMI_ATOMIC_ASM
 
-    SATOMI_MEMCPY(size, expected, &ret);
+  #else
+
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, /*zero extend instruction*/...)\
+      __asm__ __volatile__                                                                                                \
+      (                                                                                                                   \
+        __VA_ARGS__                                                                                                       \
+        "1:\n\t"                                                                                                          \
+        "ld" load_order "xr" suffix " " modifier "[out], %[target]\n\t"                                                   \
+        "cmp " modifier "[out], " modifier "[expected]\n\t"                                                               \
+        "b.ne 2f\n\t"                                                                                                     \
+        "st" store_order "xr" suffix " %w[success], " modifier "[desired], %[target]\n\t"                                 \
+        "cbnz %w[success], 1b\n\t"                                                                                        \
+        msvc_fence                                                                                                        \
+        "2:\n\t"                                                                                                          \
+        "cset %w[success], eq\n\t"                                                                                        \
+        : [target] "+Q" (*(type *)target), [success] "=&r" (success), [out] "=&r" (out)                                   \
+        : [desired] "r" (*(type *)desired), [expected] "r" (*(type *)expected)                                            \
+        : "cc", "memory"                                                                                                  \
+      );
+
+    #define SATOMI_PASTE_BLOCK(order, type, ...)                \
+      type out;                                                 \
+      SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, type, __VA_ARGS__); \
+      SATOMI_MEMCPY(size, expected, &out);                      \
+      return success
+
+    SATOMI_BOOL success;
+    if (size == 1) { SATOMI_PASTE_BLOCK(order, __UINT8_TYPE__, "b", "%w", "uxtb %w[expected], %w[expected]\n\t"); }
+    else if (size == 2) { SATOMI_PASTE_BLOCK(order, __UINT16_TYPE__, "h", "%w", "uxth %w[expected], %w[expected]\n\t"); }
+    else if (size == 4) { SATOMI_PASTE_BLOCK(order, __UINT32_TYPE__, "", "%w", ""); }
+    else if (size == 8) { SATOMI_PASTE_BLOCK(order, __UINT64_TYPE__, "", "%x", ""); }
+    else if (size == 16)
+    {
+      struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } out, e, d;
+      SATOMI_MEMCPY(size, &e, expected);
+      SATOMI_MEMCPY(size, &d, desired);
+
+      unsigned success;
+
+      #undef SATOMI_ATOMIC_ASM
+      #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, ...)               \
+        __asm__ __volatile__                                                            \
+        (                                                                               \
+          "1:\n\t"                                                                      \
+          "ld" load_order "xp %x[out_0], %x[out_1], %[target]\n\t"                      \
+          "cmp %x[out_0], %x[expected_0]\n\t"                                           \
+          "ccmp %x[out_1], %x[expected_1], #0, eq\n\t"                                  \
+          "b.ne 2f\n\t"                                                                 \
+          "st" store_order "xp %w[success], %x[desired_0], %x[desired_1], %[target]\n\t"\
+          "cbnz %w[success], 1b\n\t"                                                    \
+          msvc_fence                                                                    \
+          "2:\n\t"                                                                      \
+          "cset %w[success], eq\n\t"                                                    \
+          : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),     \
+            [out_0] "=&r" (out.v[0]), [out_1] "=&r" (out.v[1])                          \
+          : [desired_0] "r" (d.v[0]), [desired_1] "r" (d.v[1]),                         \
+            [expected_0] "r" (e.v[0]), [expected_1] "r" (e.v[1])                        \
+          : "cc", "memory"                                                              \
+        );
+
+      SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
+
+      SATOMI_MEMCPY(size, expected, &out);
+
+      return success;
+    }
+
+    #undef SATOMI_PASTE_BLOCK
+    #undef SATOMI_ATOMIC_ASM
 
   #endif
 
-    return success;
-  }
+#endif
 
   return 0;
-#endif
 }
 
+// Don't forget to clear padding!
 SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size,
   volatile void *target, void *expected, const void *desired, memory_order order)
 {
@@ -456,62 +575,101 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size,
 
 #if defined(_MSC_VER) && !defined(__clang__)
 
+  // on msvc there aren't any weak versions of compare_exchange so forward to compare_exchange_strong
   return satomi__atomic_compare_exchange_strong(size, target, expected, desired, order);
 
-#else
+#elif defined(__x86_64__)
 
-  #define SATOMI_ATOMIC_OP(INT) INT d; SATOMI_MEMCPY(size, &d, desired); return __atomic_compare_exchange_n((volatile INT *)target, (INT *)expected, d,\
-    1, (int)order, (int)(order == memory_order_acq_rel || order == memory_order_seq_cst ? memory_order_acquire : memory_order_relaxed));
-  SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
-  #undef SATOMI_ATOMIC_OP
+  // compare_exchange_weak and compare_exchange_strong are identical on x86-64
+  return satomi__atomic_compare_exchange_strong(size, target, expected, desired, order);
 
-  else if (size == 16)
-  {
-  #if defined(__x86_64__)
+#elif defined(__aarch64__)
 
+  // builtin CAS support with ARM LSE 1
+  #ifdef __ARM_FEATURE_ATOMICS
+
+    // if we have LSE support compare_exchange_weak/strong are identical
+    // because compare_exchange_strong doesn't require loops
     return satomi__atomic_compare_exchange_strong(size, target, expected, desired, order);
 
-  #elif defined(__aarch64__)
+  #else
 
-    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, e, d;
-    SATOMI_MEMCPY(size, &e, expected);
-    SATOMI_MEMCPY(size, &d, desired);
-    SATOMI_BOOL success;
+    #pragma push_macro("SATOMI_MSVC_STL_SEQ_CST_FENCE")
+    #undef SATOMI_MSVC_STL_SEQ_CST_FENCE
+    #define SATOMI_MSVC_STL_SEQ_CST_FENCE "cbnz %w[success], 1f\n\t" "dmb ish\n\t"
 
-    #define SATOMI_ATOMIC_ASM(load_order, store_order)                                \
-      __asm__ __volatile__                                                            \
-      (                                                                               \
-        "mov %w[success], #0\n\t"                                                     \
-        "ld" load_order "xp %x[original_0], %x[original_1], %[target]\n\t"            \
-        "cmp %x[original_0], %x[expected_0]\n\t"                                      \
-        "ccmp %x[original_1], %x[expected_1], #0, eq\n\t"                             \
-        "b.ne 1f\n\t"                                                                 \
-        "st" store_order "xp %w[success], %x[desired_0], %x[desired_1], %[target]\n\t"\
-        "eor %w[success], %w[success], #1\n\t"                                        \
-        "1:\n\t"                                                                      \
-        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),     \
-          [original_0] "=&r" (ret.v[0u]), [original_1] "=&r" (ret.v[1u])              \
-        : [desired_0] "r" (d.v[0u]), [desired_1] "r" (d.v[1u]),                       \
-          [expected_0] "r" (e.v[0u]), [expected_1] "r" (e.v[1u])                      \
-        : "cc", "memory"                                                              \
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, /*zero extend instruction*/...)\
+      __asm__ __volatile__                                                                                                \
+      (                                                                                                                   \
+        __VA_ARGS__                                                                                                       \
+        "ld" load_order "xr" suffix " " modifier "[out], %[target]\n\t"                                                   \
+        "cmp " modifier "[out], " modifier "[expected]\n\t"                                                               \
+        "b.ne 1f\n\t"                                                                                                     \
+        "st" store_order "xr" suffix " %w[success], " modifier "[desired], %[target]\n\t"                                 \
+        msvc_fence                                                                                                        \
+        "1:\n\t"                                                                                                          \
+        "cset %w[success], eq\n\t"                                                                                        \
+        : [target] "+Q" (*(type *)target), [success] "=&r" (success), [out] "=&r" (out)                                   \
+        : [desired] "r" (*(type *)desired), [expected] "r" (*(type *)expected)                                            \
+        : "cc", "memory"                                                                                                  \
       );
 
-    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
-    #undef SATOMI_ATOMIC_ASM
+    #define SATOMI_PASTE_BLOCK(order, type, ...)                \
+      type out;                                                 \
+      SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, type, __VA_ARGS__); \
+      SATOMI_MEMCPY(size, expected, &out);                      \
+      return success
 
-    SATOMI_MEMCPY(size, expected, &ret);
-    return success;
+    SATOMI_BOOL success;
+    if (size == 1) { SATOMI_PASTE_BLOCK(order, __UINT8_TYPE__, "b", "%w", "uxtb %w[expected], %w[expected]\n\t"); }
+    else if (size == 2) { SATOMI_PASTE_BLOCK(order, __UINT16_TYPE__, "h", "%w", "uxth %w[expected], %w[expected]\n\t"); }
+    else if (size == 4) { SATOMI_PASTE_BLOCK(order, __UINT32_TYPE__, "", "%w", ""); }
+    else if (size == 8) { SATOMI_PASTE_BLOCK(order, __UINT64_TYPE__, "", "%x", ""); }
+    else if (size == 16)
+    {
+      struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } out, e, d;
+      SATOMI_MEMCPY(size, &e, expected);
+      SATOMI_MEMCPY(size, &d, desired);
+      SATOMI_BOOL success;
+
+      #undef SATOMI_ATOMIC_ASM
+      #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, ...)               \
+        __asm__ __volatile__                                                            \
+        (                                                                               \
+          "ld" load_order "xp %x[out_0], %x[out_1], %[target]\n\t"                      \
+          "cmp %x[out_0], %x[expected_0]\n\t"                                           \
+          "ccmp %x[out_1], %x[expected_1], #0, eq\n\t"                                  \
+          "b.ne 1f\n\t"                                                                 \
+          "st" store_order "xp %w[success], %x[desired_0], %x[desired_1], %[target]\n\t"\
+          msvc_fence                                                                    \
+          "1:\n\t"                                                                      \
+          "cset %w[success], eq\n\t"                                                    \
+          : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),     \
+            [out_0] "=&r" (out.v[0]), [out_1] "=&r" (out.v[1])                          \
+          : [desired_0] "r" (d.v[0]), [desired_1] "r" (d.v[1]),                         \
+            [expected_0] "r" (e.v[0]), [expected_1] "r" (e.v[1])                        \
+          : "cc", "memory"                                                              \
+        );
+
+      SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
+      #undef SATOMI_ATOMIC_ASM
+
+      SATOMI_MEMCPY(size, expected, &out);
+      return success;
+    }
+
+    #undef SATOMI_PASTE_BLOCK
+    #pragma pop_macro("SATOMI_MSVC_STL_SEQ_CST_FENCE")
+
+    return 0;
 
   #endif
-  }
-
-  return 0;
 
 #endif
 }
 
 SATOMI_INLINE void satomi__atomic_exchange(SATOMI_U64 size, void *variable,
-  volatile void *target, const void *value, memory_order order)
+  volatile void *target, const void *desired, memory_order order)
 {
   SATOMI_CHECK_PRECONDITIONS(size, target);
   if (size > 16)
@@ -523,79 +681,166 @@ SATOMI_INLINE void satomi__atomic_exchange(SATOMI_U64 size, void *variable,
 
 #if defined(_MSC_VER) && !defined(__clang__)
 
-  struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret, v;
-  v.v[0] = 0;
-  SATOMI_MEMCPY(size, &v, value);
+  struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret, d;
+  d.v[0] = 0;
+  SATOMI_MEMCPY(size, &d, desired);
 
-  #define SATOMI_HELPER(cast) (volatile cast *)target, (cast)v.v[0]
+  #define SATOMI_HELPER(cast) (volatile cast *)target, (cast)d.v[0]
   SATOMI_CHOOSE_SIZE(SATOMI_HELPER, size, _InterlockedExchange)
   #undef SATOMI_HELPER
 
   else if (size == 16)
   {
-    (void)v;
-    while (!satomi__atomic_compare_exchange_strong(size, target, &ret, value, order)) {}
+    (void)d;
+    while (!satomi__atomic_compare_exchange_strong(size, target, &ret, desired, order)) {}
   }
 
-  if (variable != SATOMI_NULL)
+  if (variable)
     SATOMI_MEMCPY(size, variable, &ret);
 
-#else
+#elif defined(__x86_64__)
 
-  #define SATOMI_ATOMIC_OP(INT) INT ret, v = 0; SATOMI_MEMCPY(size, &v, value); \
-    ret = __atomic_exchange_n((volatile INT *)target, v, (int)order); \
-    if (variable != SATOMI_NULL) SATOMI_MEMCPY(size, variable, &ret);
-  SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
-  #undef SATOMI_ATOMIC_OP
+  #define SATOMI_ATOMIC_ASM(type, affix)        \
+    __asm__ __volatile__                        \
+    (                                           \
+      "xchg" affix " %[desired], %[target]\n\t" \
+      : [target] "+m" (*(type *)target),        \
+        [desired] "+r" (*(type *)&d.v[0])       \
+      :                                         \
+      : "memory"                                \
+    );                                          \
+    if (variable)                               \
+      SATOMI_MEMCPY(size, variable, &d.v[0]);
 
+  struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } out, d;
+  SATOMI_MEMCPY(size, &d, desired);
+
+  if (size == 1) { SATOMI_ATOMIC_ASM(__UINT8_TYPE__, "b"); }
+  else if (size == 2) { SATOMI_ATOMIC_ASM(__UINT16_TYPE__, "w"); }
+  else if (size == 4) { SATOMI_ATOMIC_ASM(__UINT32_TYPE__, "l"); }
+  else if (size == 8) { SATOMI_ATOMIC_ASM(__UINT64_TYPE__, "q"); }
   else if (size == 16)
   {
-    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, v;
-    SATOMI_MEMCPY(size, &v, value);
-
-    // shamelessly stolen from boost.atomic
-  #if defined (__x86_64__)
-
     __asm__ __volatile__
     (
       // the load needs to be done in assembly because movq is guaranteed to be atomic
-      "movq %[target_lo], %%rax\n\t"
-      "movq %[target_hi], %%rdx\n\t"
+      "movq %[target_0], %%rax\n\t"
+      "movq %[target_1], %%rdx\n\t"
       ".align 16\n\t"
-      "1: lock; cmpxchg16b %[target_lo]\n\t"
+      "1: lock; cmpxchg16b %[target_0]\n\t"
       "jne 1b\n\t"
-      : [target_lo] "+m" (((volatile SATOMI_U64 *)target)[0]),
-        [target_hi] "+m" (((volatile SATOMI_U64 *)target)[1]),
-        "=&a" (ret.v[0]), "=&d" (ret.v[1])
-      : "b" (v.v[0]), "c" (v.v[1])
+      : [target_0] "+m" (((volatile uint128__ *)target)[0]),
+        [target_1] "+m" (((volatile SATOMI_U64 *)target)[1]),
+        "=&a" (out.v[0]), "=&d" (out.v[1])
+      : "b" (d.v[0]), "c" (d.v[1])
       : "cc", "memory"
     );
 
-  #elif defined (__aarch64__)
+    if (variable)
+      SATOMI_MEMCPY(size, variable, &out);
+  }
 
-    SATOMI_BOOL success;
+  #undef SATOMI_ATOMIC_ASM
 
-    #define SATOMI_ATOMIC_ASM(load_order, store_order)                            \
-      __asm__ __volatile__                                                        \
-      (                                                                           \
-        "1:\n\t"                                                                  \
-        "ld" load_order "xp %x[original_0], %x[original_1], %[target]\n\t"        \
-        "st" store_order "xp %w[success], %x[value_0], %x[value_1], %[target]\n\t"\
-        "cbnz %w[success], 1b\n\t"                                                \
-        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target), \
-          [original_0] "=&r" (ret.v[0u]), [original_1] "=&r" (ret.v[1u])          \
-        : [value_0] "r" (v.v[0u]), [value_1] "r" (v.v[1u])                        \
-        : "memory"                                                                \
+#elif defined(__aarch64__)
+
+  #define SATOMI_PASTE_BLOCK(order, type, ...)                \
+    type d, out;                                              \
+    SATOMI_MEMCPY(size, &d, desired);                         \
+    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, type, __VA_ARGS__); \
+    if (variable)                                             \
+      SATOMI_MEMCPY(size, variable, &out);
+
+  // builtin exchange support with ARM LSE 1
+  #ifdef __ARM_FEATURE_ATOMICS
+
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, ...)       \
+      __asm__ __volatile__                                                                            \
+      (                                                                                               \
+        "swp" load_order store_order suffix " " modifier "[desired], " modifier "[out], %[target]\n\t"\
+        : [target] "+Q" (*(type *)target), [out] "=&r" (out)                                          \
+        : [desired] "r" (d)                                                                           \
+        : "memory"                                                                                    \
       );
 
-    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
-    #undef SATOMI_ATOMIC_ASM
+  #else
+
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, ...) \
+      SATOMI_BOOL success;                                                                      \
+      __asm__ __volatile__                                                                      \
+      (                                                                                         \
+        "1:\n\t"                                                                                \
+        "ld" load_order "xr" suffix " " modifier "[out], %[target]\n\t"                         \
+        "st" store_order "xr" suffix " %w[success], " modifier "[desired], %[target]\n\t"       \
+        "cbnz %w[success], 1b\n\t"                                                              \
+        msvc_fence                                                                              \
+        : [success] "=&r" (success), [target] "+Q" (*(type *)target), [out] "=&r" (out)         \
+        : [desired] "r" (d)                                                                     \
+        : "memory"                                                                              \
+      );
 
   #endif
 
-    if (variable != SATOMI_NULL)
-      SATOMI_MEMCPY(size, &variable, &ret);
+  if (size == 1) { SATOMI_PASTE_BLOCK(order, __UINT8_TYPE__, "b", "%w"); }
+  else if (size == 2) { SATOMI_PASTE_BLOCK(order, __UINT16_TYPE__, "h", "%w"); }
+  else if (size == 4) { SATOMI_PASTE_BLOCK(order, __UINT32_TYPE__, "", "%w"); }
+  else if (size == 8) { SATOMI_PASTE_BLOCK(order, __UINT64_TYPE__, "", "%x"); }
+
+  #undef SATOMI_ATOMIC_ASM
+
+  else if (size == 16)
+  {
+  #ifdef SATOMI_ARM_USE_LSE128
+
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } out;
+    SATOMI_MEMCPY(size, &out, desired);
+
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, ...)               \
+      __asm__ __volatile__                                                            \
+      (                                                                               \
+        "swpp" load_order store_order " %x[out_0], %x[out_1], %[target]\n\t"          \
+        : [target] "+Q" (*(struct uint128__ *)target),                                \
+          [out_0] "=&r" (out.v[0]), [out_1] "=&r" (out.v[1])                          \
+        :                                                                             \
+        : "memory"                                                                    \
+      );
+
+    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
+
+    if (variable)
+      SATOMI_MEMCPY(size, variable, &out);
+
+  #else
+
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } out, d;
+    SATOMI_BOOL success;
+    SATOMI_MEMCPY(size, &d, desired);
+
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, ...)               \
+      __asm__ __volatile__                                                            \
+      (                                                                               \
+        "1:\n\t"                                                                      \
+        "ld" load_order "xp %x[out_0], %x[out_1], %[target]\n\t"                      \
+        "st" store_order "xp %w[success], %x[desired_0], %x[desired_1], %[target]\n\t"\
+        "cbnz %w[success], 1b\n\t"                                                    \
+        msvc_fence                                                                    \
+        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),     \
+          [out_0] "=&r" (out.v[0]), [out_1] "=&r" (out.v[1])                          \
+        : [desired_0] "r" (d.v[0]), [desired_1] "r" (d.v[1])                          \
+        : "memory"                                                                    \
+      );
+
+    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
+
+    if (variable)
+      SATOMI_MEMCPY(size, variable, &out);
+
+  #endif
   }
+
+  #undef SATOMI_ATOMIC_ASM
+  #undef SATOMI_PASTE_BLOCK
+
 #endif
 }
 
@@ -622,112 +867,220 @@ SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size,
 
   struct SATOMI_ALIGNAS(16) int128__ { __int64 v[2]; } ret;
 
-  if (size == 1)
-  {
-    ret.v[0] = __iso_volatile_load8((const volatile __int8 *)target);
-    if (order != memory_order_relaxed)
+  // ldr + dmb ish, another stupid ABI
+  #define SATOMI_HELPER(size)                                                   \
+    ret.v[0] = __iso_volatile_load##size((const volatile __int##size *)target); \
+    if (order != memory_order_relaxed)                                          \
       SATOMI_COMPILER_OR_MEMORY_BARRIER();
-  }
-  else if (size == 2)
-  {
-    ret.v[0] = __iso_volatile_load16((const volatile __int16 *)target);
-    if (order != memory_order_relaxed)
-      SATOMI_COMPILER_OR_MEMORY_BARRIER();
-  }
-  else if (size == 4)
-  {
-    ret.v[0] = __iso_volatile_load32((const volatile __int32 *)target);
-    if (order != memory_order_relaxed)
-      SATOMI_COMPILER_OR_MEMORY_BARRIER();
-  }
-  else if (size == 8)
-  {
-  #ifdef _M_ARM
-    ret.v[0] = __ldrexd((const volatile __int64 *)target);
-  #else
-    ret.v[0] = __iso_volatile_load64((const volatile __int64 *)target);
-  #endif
-    if (order != memory_order_relaxed)
-      SATOMI_COMPILER_OR_MEMORY_BARRIER();
-  }
+
+  if (size == 1) { SATOMI_HELPER(8); }
+  else if (size == 2) { SATOMI_HELPER(16); }
+  else if (size == 4) {SATOMI_HELPER(32); }
+  else if (size == 8) { SATOMI_HELPER(64); }
   else if (size == 16)
   {
     SATOMI_CHOOSE_MEMORY_ORDER(order, (void)_InterlockedCompareExchange128, ((volatile __int64 *)target, 0, 0, ret.v))
   }
 
-  if (variable != SATOMI_NULL)
+  if (variable)
     SATOMI_MEMCPY(size, variable, &ret);
 
-#else
+  #undef SATOMI_HELPER
 
-  #define SATOMI_ATOMIC_OP(INT) INT v = __atomic_load_n((volatile INT *)target, (int)order); \
-    if (variable != SATOMI_NULL) SATOMI_MEMCPY(size, variable, &v);
-  SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
-  #undef SATOMI_ATOMIC_OP
+#elif defined(__x86_64__)
 
+#define SATOMI_ATOMIC_ASM(type, affix)  \
+  type out;                             \
+  __asm__ __volatile__                  \
+  (                                     \
+    "mov" affix " %[target], %[out]\n\t"\
+    : [out] "=r" (out)                  \
+    : [target] "m" (*(type *)target)    \
+    : "memory"                          \
+  );                                    \
+  if (variable)                         \
+    SATOMI_MEMCPY(size, variable, &out)
+
+  if (size == 1) { SATOMI_ATOMIC_ASM(__UINT8_TYPE__, ""); }
+  else if (size == 2) { SATOMI_ATOMIC_ASM(__UINT16_TYPE__, ""); }
+  else if (size == 4) { SATOMI_ATOMIC_ASM(__UINT32_TYPE__, ""); }
+  else if (size == 8) { SATOMI_ATOMIC_ASM(__UINT64_TYPE__, "q"); }
   else if (size == 16)
   {
-    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } out;
 
-    #if defined(__x86_64__)
+    #if defined(__AVX__)
 
-      #if defined(__AVX__)
+      // Intel Software Developer Manual Volume 3, Guaranteed Atomic Operations
+      // Processors supporting AVX guarantee aligned vector moves to be atomic.
+      __asm__ __volatile__
+      (
+        "vmovdqa %[target], %[out]\n\t"
+        : [out] "=x" (out)
+        : [target] "m" (*(struct uint128__ *)target)
+        : "memory"
+      );
 
-        // Intel Software Developer Manual Volume 3, Guaranteed Atomic Operations
-        // Processors supporting AVX guarantee aligned vector moves to be atomic.
-        __asm__ __volatile__
-        (
-          "vmovdqa %[target], %[value]\n\t"
-          : [value] "=x" (ret)
-          : [target] "m" (*(struct uint128__ *)target)
-          : "memory"
-        );
+    #else
 
-      #else
-
-        __asm__ __volatile__
-        (
-          // store whatever is rbx/rcx in rax/rdx so that
-          // even if we succeed to exchange we already have the value in rax/rdx
-          "movq %%rbx, %%rax\n\t"
-          "movq %%rcx, %%rdx\n\t"
-          "lock; cmpxchg16b %[target]\n\t"
-          : "=&a" (ret.v[0]), "=&d" (ret.v[1])
-          : [target] "m" (*(struct uint128__ *)target)
-          : "cc", "memory"
-        );
-
-      #endif
-
-    #elif defined(__aarch64__)
-
-      unsigned success;
-
-      #define SATOMI_DEFINE_LOAD_MEMORY_ORDERS(acquire_order)            \
-        __asm__ __volatile__                                             \
-        (                                                                \
-          "1:\n\t"                                                       \
-          "ld" acquire_order "xp %x[value_0], %x[value_1], %[target]\n\t"\
-          "stxp %w[success], %x[value_0], %x[value_1], %[target]\n\t"    \
-          "cbnz %w[success], 1b\n\t"                                     \
-          : [success] "=&r" (success),                                   \
-            [value_0] "=&r" (ret.v[0]), [value_1] "=&r" (ret.v[1])       \
-          : [target] "Q" (*(struct uint128__ *)target)                   \
-          : "memory"                                                     \
-        );
-
-      if (order == memory_order_relaxed)
-        SATOMI_DEFINE_LOAD_MEMORY_ORDERS("")
-      else
-        SATOMI_DEFINE_LOAD_MEMORY_ORDERS("a")
-
-      #undef SATOMI_DEFINE_LOAD_MEMORY_ORDERS
+      __asm__ __volatile__
+      (
+        // store whatever is rbx/rcx in rax/rdx so that
+        // even if we succeed to exchange we already have the value in rax/rdx
+        "movq %%rbx, %%rax\n\t"
+        "movq %%rcx, %%rdx\n\t"
+        "lock; cmpxchg16b %[target]\n\t"
+        : "=&a" (out.v[0]), "=&d" (out.v[1])
+        : [target] "m" (*(struct uint128__ *)target)
+        : "cc", "memory"
+      );
 
     #endif
 
-    if (variable != SATOMI_NULL)
-      SATOMI_MEMCPY(size, variable, &ret);
+    if (variable)
+      SATOMI_MEMCPY(size, variable, &out);
   }
+
+  #undef SATOMI_ATOMIC_ASM
+
+#elif defined(__aarch64__)
+
+  #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, ...) \
+    __asm__ __volatile__                                                                      \
+    (                                                                                         \
+      "ld" load_order "r" suffix " " modifier "[out], %[target]\n\t"                          \
+      : [out] "=r" (out)                                                                      \
+      : [target] "Q" (*(type *)target)                                                        \
+      : "memory"                                                                              \
+    );
+
+  #define SATOMI_PASTE_BLOCK(order, type, ...)                \
+    type out;                                                 \
+    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, type, __VA_ARGS__); \
+    if (variable)                                             \
+      SATOMI_MEMCPY(size, variable, &out);
+
+  #pragma push_macro("SATOMI_CHOOSE_MEMORY_ORDER_ASM")
+  #undef SATOMI_CHOOSE_MEMORY_ORDER_ASM
+
+  // feature macro to check for ARMv8.3 RCPC/LDAPR
+  #if __ARM_FEATURE_RCPC >= 1
+
+    #define SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, ...)\
+      if (order == memory_order_relaxed) { SATOMI_ATOMIC_ASM("", "", "", __VA_ARGS__) } \
+      else if (order == memory_order_consume || order == memory_order_acquire) { SATOMI_ATOMIC_ASM("ap", "", "", __VA_ARGS__) } \
+      else if (order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("a", "l", SATOMI_MSVC_STL_SEQ_CST_FENCE, __VA_ARGS__) } \
+      else { __builtin_trap(); }
+
+  #else
+
+    #define SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, ...)\
+      if (order == memory_order_relaxed) { SATOMI_ATOMIC_ASM("", "", "", __VA_ARGS__) } \
+      else if (order == memory_order_consume || order == memory_order_acquire) { SATOMI_ATOMIC_ASM("a", "", "", __VA_ARGS__) } \
+      else if (order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("a", "l", SATOMI_MSVC_STL_SEQ_CST_FENCE, __VA_ARGS__) } \
+      else { __builtin_trap(); }
+
+  #endif
+
+  if (size == 1) { SATOMI_PASTE_BLOCK(order, __UINT8_TYPE__, "b", "%w"); }
+  else if (size == 2) { SATOMI_PASTE_BLOCK(order, __UINT16_TYPE__, "h", "%w"); }
+  else if (size == 4) { SATOMI_PASTE_BLOCK(order, __UINT32_TYPE__, "", "%w"); }
+  else if (size == 8) { SATOMI_PASTE_BLOCK(order, __UINT64_TYPE__, "", "%x"); }
+
+  #undef SATOMI_CHOOSE_MEMORY_ORDER_ASM
+  #pragma pop_macro("SATOMI_CHOOSE_MEMORY_ORDER_ASM")
+
+  else if (size == 16)
+  {
+  // checking for ARMv8.4 (LDP and STP)
+  #if __ARM_FEATURE_DOTPROD
+
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } out;
+
+    // > From v8.4a onwards, aligned 128-bit ldp and stp instructions are guaranteed to be single-copy atomic
+    // https://reviews.llvm.org/D67485
+    #undef SATOMI_ATOMIC_ASM
+
+    // the load might pass an earlier store so we need either ldar or dmb ishld for seq_cst
+    // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=108891
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, pre_fence, post_fence) \
+      __asm__ __volatile__                                                    \
+      (                                                                       \
+        pre_fence                                                             \
+        "ld" load_order "p " "%x[out_0], %x[out_1], %[target]\n\t"            \
+        post_fence                                                            \
+        : [out_0] "=&r" (out.v[0]), [out_1] "=r" (out.v[1])                   \
+        : [target] "Q" (*(uint128__ *)target)                                 \
+        : "memory"                                                            \
+      );
+
+    if (order == memory_order_relaxed) { SATOMI_ATOMIC_ASM("", "", "", ""); }
+
+    // feature macro to check for ARMv8.9 RCPC3 (LDIAPP and STILP)
+    // needs +rcpc3 extension, i.e. -march=armv8.4-a+rcpc3
+    // as of gcc 16.1 it just consumes the argument and doesn't define __ARM_FEATURE_RCPC == 3
+    #if __ARM_FEATURE_RCPC >= 3
+      else if (order == memory_order_consume || order == memory_order_acquire) { SATOMI_ATOMIC_ASM("iap", "", "", ""); }
+      else if (order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("iap", "", "ldar %x[out_0], %[target]\n\t", "") }
+    #else
+      else if (order == memory_order_consume || order == memory_order_acquire) { SATOMI_ATOMIC_ASM("", "", "", "dmb ishld\n\t"); }
+      else if (order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("", "", "ldar %x[out_0], %[target]\n\t", "dmb ishld\n\t") }
+    #endif
+    else { __builtin_trap(); }
+
+    if (variable)
+      SATOMI_MEMCPY(size, variable, &out);
+
+  #else
+
+    // WARNING!!!
+    // the following implementations NEED a store (casp/stxp)
+    // in order to confirm that the load was atomic
+    // if the load is from read-only memory, this WILL CRASH the program
+    // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=70814#c3
+
+  // builtin CAS support with ARM LSE 1
+  #ifdef __ARM_FEATURE_ATOMICS
+
+    // utilise casp to load
+    // desired value doesn't matter, so we can just pass the same thing
+    (void)satomi__atomic_compare_exchange_strong(size,
+      (volatile void *)target, variable, variable, order);
+    return;
+
+  #else
+
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } out;
+
+    SATOMI_BOOL success;
+
+    #undef SATOMI_ATOMIC_ASM
+    #define SATOMI_ATOMIC_ASM(load_order)                           \
+      __asm__ __volatile__                                          \
+      (                                                             \
+        "1:\n\t"                                                    \
+        "ld" load_order "xp %x[value_0], %x[value_1], %[target]\n\t"\
+        "stxp %w[success], %x[value_0], %x[value_1], %[target]\n\t" \
+        "cbnz %w[success], 1b\n\t"                                  \
+        : [success] "=&r" (success),                                \
+          [value_0] "=&r" (out.v[0]), [value_1] "=&r" (out.v[1])    \
+        : [target] "Q" (*(struct uint128__ *)target)                \
+        : "memory"                                                  \
+      )
+
+    if (order == memory_order_relaxed)
+      SATOMI_ATOMIC_ASM("");
+    else
+      SATOMI_ATOMIC_ASM("a");
+
+    if (variable)
+      SATOMI_MEMCPY(size, variable, &out);
+
+  #endif
+  #endif
+  }
+
+  #undef SATOMI_ATOMIC_ASM
 #endif
 }
 
@@ -749,7 +1102,8 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
 
 #if defined(_MSC_VER) && !defined(__clang__)
 
-  #if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
+  #if defined(_M_ARM64) || defined(_M_ARM64EC)
+    // the stupid ABI mentioned at the top
     #define SATOMI_SEQ_CST_STORE(iso_suffix, ...) SATOMI_COMPILER_OR_MEMORY_BARRIER(); __iso_volatile_store##iso_suffix(memory, v); SATOMI_COMPILER_OR_MEMORY_BARRIER();
   #else
     #define SATOMI_SEQ_CST_STORE(iso_suffix, interlocked_suffix, ...) (void)_InterlockedExchange##interlocked_suffix(__VA_ARGS__ memory, v);
@@ -785,76 +1139,217 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
   #undef SATOMI_DEFINE_STORE_MEMORY_ORDERS
   #undef SATOMI_SEQ_CST_STORE
 
-#else
+#elif defined(__x86_64__)
 
-  #define SATOMI_ATOMIC_OP(INT) INT v; SATOMI_MEMCPY(size, &v, value); __atomic_store_n((volatile INT *)target, v, (int)order);
-  SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
-  #undef SATOMI_ATOMIC_OP
+  #define SATOMI_ATOMIC_ASM(type, affix)  \
+    type out;                             \
+    SATOMI_MEMCPY(size, &out, value);     \
+    __asm__ __volatile__                  \
+    (                                     \
+      "mov" affix " %[out], %[target]\n\t"\
+      : [target] "=m" (*(type *)target)   \
+      : [out] "r" (out)                   \
+      : "memory"                          \
+    );
 
+  if (size == 1) { SATOMI_ATOMIC_ASM(__UINT8_TYPE__, "b"); }
+  else if (size == 2) { SATOMI_ATOMIC_ASM(__UINT16_TYPE__, "w"); }
+  else if (size == 4) { SATOMI_ATOMIC_ASM(__UINT32_TYPE__, "l"); }
+  else if (size == 8) { SATOMI_ATOMIC_ASM(__UINT64_TYPE__, "q"); }
   else if (size == 16)
   {
-    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, v;
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } v;
+
+  #if defined(__AVX__)
+
+    // Intel Software Developer Manual Volume 3, Guaranteed Atomic Operations
+    // Processors supporting AVX guarantee aligned vector moves to be atomic.
+
+    // the manual load from memory inside the asm block is
+    // because clang "doesn't know how to handle indirect register inputs yet for constraint 'x'"
+    __asm__ __volatile__
+    (
+      "vmovdqa %[value], %%xmm8\n\t"
+      "vmovdqa %%xmm8, %[storage]\n\t"
+      : [storage] "=m" (*(struct uint128__ *)target)
+      : [value] "m" (*(struct uint128__ *)value)
+      : "xmm8", "memory"
+    );
+
+  #else
+
     SATOMI_MEMCPY(size, &v, value);
-
-  #if defined(__x86_64__)
-
-    (void)ret;
-
-    #if defined(__AVX__)
-
-      // Intel Software Developer Manual Volume 3, Guaranteed Atomic Operations
-      // Processors supporting AVX guarantee aligned vector moves to be atomic.
-      __asm__ __volatile__
-      (
-        "vmovdqa %[value], %[storage]\n\t"
-        : [storage] "=m" (*(struct uint128__ *)target)
-        : [value] "x" (v)
-        : "memory"
-      );
-
-    #else
-
-      __asm__ __volatile__
-      (
-        "movq %[target_lo], %%rax\n\t"
-        "movq %[target_hi], %%rdx\n\t"
-        ".align 16\n\t"
-        "1: lock; cmpxchg16b %[target_lo]\n\t"
-        "jne 1b\n\t"
-        : [target_lo] "=m" (((volatile SATOMI_U64 *)target)[0]),
-          [target_hi] "=m" (((volatile SATOMI_U64 *)target)[1])
-        : "b" (v.v[0]), "c" (v.v[1])
-        : "cc", "rax", "rdx", "memory"
-      );
-
-    #endif
-
-  #elif defined(__aarch64__)
-
-    unsigned success;
-
-    #define SATOMI_DEFINE_STORE_MEMORY_ORDERS(store_order)                        \
-      __asm__ __volatile__                                                        \
-      (                                                                           \
-        "1:\n\t"                                                                  \
-        "ldxp %x[original_0], %x[original_1], %[target]\n\t"                      \
-        "st" store_order "xp %w[success], %x[value_0], %x[value_1], %[target]\n\t"\
-        "cbnz %w[success], 1b\n\t"                                                \
-        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target), \
-          [original_0] "=&r" (ret.v[0u]), [original_1] "=&r" (ret.v[1u])          \
-        : [value_0] "r" (v.v[0u]), [value_1] "r" (v.v[1u])                        \
-        : "memory"                                                                \
-      );
-
-    if (order == memory_order_relaxed)
-      SATOMI_DEFINE_STORE_MEMORY_ORDERS("")
-    else
-      SATOMI_DEFINE_STORE_MEMORY_ORDERS("l")
-
-    #undef SATOMI_DEFINE_STORE_MEMORY_ORDERS
+    __asm__ __volatile__
+    (
+      "movq %[target_lo], %%rax\n\t"
+      "movq %[target_hi], %%rdx\n\t"
+      ".align 16\n\t"
+      "1: lock; cmpxchg16b %[target_lo]\n\t"
+      "jne 1b\n\t"
+      : [target_lo] "=m" (((volatile SATOMI_U64 *)target)[0]),
+        [target_hi] "=m" (((volatile SATOMI_U64 *)target)[1])
+      : "b" (v.v[0]), "c" (v.v[1])
+      : "cc", "rax", "rdx", "memory"
+    );
 
   #endif
   }
+
+  #undef SATOMI_ATOMIC_ASM
+
+#elif defined(__aarch64__)
+
+  #pragma push_macro("SATOMI_CHOOSE_MEMORY_ORDER_ASM")
+  #undef SATOMI_CHOOSE_MEMORY_ORDER_ASM
+  #define SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, ...)\
+    if (order == memory_order_relaxed) { SATOMI_ATOMIC_ASM("", "", "", __VA_ARGS__) } \
+    else if (order == memory_order_release) { SATOMI_ATOMIC_ASM("", "l", "", __VA_ARGS__) } \
+    else if (order == memory_order_seq_cst) { SATOMI_ATOMIC_ASM("", "l", SATOMI_MSVC_STL_SEQ_CST_FENCE, __VA_ARGS__) } \
+    else { __builtin_trap(); }
+
+  #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier)\
+    type v;                                                                             \
+    SATOMI_MEMCPY(size, &v, value);                                                     \
+    __asm__ __volatile__                                                                \
+    (                                                                                   \
+      "st" store_order "r" suffix " " modifier "[value], %[target]\n\t"                 \
+      msvc_fence                                                                        \
+      : [target] "+Q" (*(type *)target)                                                 \
+      : [value] "r" (v)                                                                 \
+      : "memory"                                                                        \
+    );
+
+  if (size == 1) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT8_TYPE__, "b", "%w"); }
+  else if (size == 2) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT16_TYPE__, "h", "%w"); }
+  else if (size == 4) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT32_TYPE__, "", "%w"); }
+  else if (size == 8) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT64_TYPE__, "", "%x"); }
+
+  #undef SATOMI_ATOMIC_ASM
+  #pragma pop_macro("SATOMI_CHOOSE_MEMORY_ORDER_ASM")
+
+  else if (size == 16)
+  {
+    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } v;
+    SATOMI_MEMCPY(size, &v, value);
+
+  // checking for ARMv8.4 (LDP and STP)
+  #if __ARM_FEATURE_DOTPROD
+
+    #define SATOMI_ATOMIC_ASM_V8_4(store_order, pre_fence, post_fence)\
+      __asm__ __volatile__                                            \
+      (                                                               \
+        pre_fence                                                     \
+        "st" store_order "p %x[value_0], %x[value_1], %[target]\n\t"  \
+        post_fence                                                    \
+        : [target] "+Q" (*(struct uint128__ *)target)                 \
+        : [value_0] "r" (v.v[0]), [value_1] "r" (v.v[1])              \
+        : "memory"                                                    \
+      )
+
+    #define SATOMI_ATOMIC_ASM_LSE128(load_order, store_order)               \
+      __asm__ __volatile__                                                  \
+      (                                                                     \
+        "swpp" load_order store_order " %x[out_0], %x[out_1], %[target]\n\t"\
+        : [target] "+Q" (*(struct uint128__ *)target),                      \
+          [out_0] "+&r" (v.v[0]), [out_1] "+&r" (v.v[1])                    \
+        :                                                                   \
+        : "memory"                                                          \
+      )
+
+    if (order == memory_order_relaxed)
+    {
+      SATOMI_ATOMIC_ASM_V8_4("", "", "");
+    }
+    else if (order == memory_order_release)
+    {
+    // feature macro to check for ARMv8.9 RCPC3 (LDIAPP and STILP)
+    // needs +rcpc3 extension, i.e. -march=armv8.4-a+rcpc3
+    // as of gcc 16.1 it just consumes the argument and doesn't define __ARM_FEATURE_RCPC == 3
+    #if __ARM_FEATURE_RCPC >= 3
+
+      // use stilp, doesn't require fences
+      SATOMI_ATOMIC_ASM_V8_4("il", "", "");
+
+    #elif defined(SATOMI_ARM_USE_LSE128)
+
+      // use swpp if stp would require a fence
+      // https://reviews.llvm.org/D143506
+      SATOMI_ATOMIC_ASM_LSE128("", "l");
+
+    #else
+
+      // > From v8.4a onwards, aligned 128-bit ldp and stp instructions are guaranteed to be single-copy atomic
+      // https://reviews.llvm.org/D67485
+      // use dmb ish + stp
+      SATOMI_ATOMIC_ASM_V8_4("", "dmb ish\n\t", "");
+
+    #endif
+
+    }
+    else if (order == memory_order_seq_cst)
+    {
+    #if defined(SATOMI_ARM_USE_LSE128)
+
+      // use swpp if stp would require a fence
+      // https://reviews.llvm.org/D143506
+      SATOMI_ATOMIC_ASM_LSE128("a", "l");
+
+    #elif __ARM_FEATURE_RCPC >= 3
+
+      // use dmb ish + stilp
+      // for more info:
+      // https://github.com/taiki-e/atomic-maybe-uninit/blob/4059f083af2c9413a0beb70e92dd434db05c2e19/src/arch/aarch64.rs#L527
+      SATOMI_ATOMIC_ASM_V8_4("il", "dmb ish\n\t", "");
+
+    #else
+
+      // use dmb ish + stp + dmb ish
+      // according to llvm codegen (clang 22.1.0)
+      SATOMI_ATOMIC_ASM_V8_4("", "dmb ish\n\t", "dmb ish\n\t");
+
+    #endif
+    }
+
+    #undef SATOMI_ATOMIC_ASM_V8_4
+    #undef SATOMI_ATOMIC_ASM_LSE128
+
+  // builtin CAS support with ARM LSE 1
+  #elif __ARM_FEATURE_ATOMICS
+
+    // use casp
+    uint128__ out = v;
+    while (!satomi__atomic_compare_exchange_strong(size, target, &out, &v, order)) { }
+
+  #else
+    // if we don't have casp atomics use a cas loop
+    // not redirecting this to satomi__atomic_compare_exchange_strong
+    // because it's more effient to rewrite the algo
+
+    uint128__ out;
+    SATOMI_BOOL success;
+
+    #define SATOMI_ATOMIC_ASM_LOOP(store_order)                                   \
+      __asm__ __volatile__                                                        \
+      (                                                                           \
+        "1:\n\t"                                                                  \
+        "ldxp %x[out_0], %x[out_1], %[target]\n\t"                                \
+        "st" store_order "xp %w[success], %x[value_0], %x[value_1], %[target]\n\t"\
+        "cbnz %w[success], 1b\n\t"                                                \
+        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target), \
+          [out_0] "=&r" (out.v[0u]), [out_1] "=&r" (out.v[1u])                    \
+        : [value_0] "r" (v.v[0u]), [value_1] "r" (v.v[1u])                        \
+        : "memory"                                                                \
+      )
+
+    if (order == memory_order_relaxed)
+      SATOMI_ATOMIC_ASM_LOOP("");
+    else
+      SATOMI_ATOMIC_ASM_LOOP("l");
+
+    #undef SATOMI_ATOMIC_ASM_LOOP
+  #endif
+  }
+
 #endif
 }
 
@@ -882,9 +1377,9 @@ SATOMI_INLINE void satomi__atomic_fetch_add(SATOMI_U64 size,
   if (subtracting && size < 16)
     o.v[0] = -o.v[0];
 
-    #define SATOMI_HELPER(cast) (volatile cast *)target, (cast)o.v[0]
-    SATOMI_CHOOSE_SIZE(SATOMI_HELPER, size, _InterlockedExchangeAdd)
-    #undef SATOMI_HELPER
+  #define SATOMI_HELPER(cast) (volatile cast *)target, (cast)o.v[0]
+  SATOMI_CHOOSE_SIZE(SATOMI_HELPER, size, _InterlockedExchangeAdd)
+  #undef SATOMI_HELPER
 
   else if (size == 16)
   {
@@ -909,91 +1404,173 @@ SATOMI_INLINE void satomi__atomic_fetch_add(SATOMI_U64 size,
     while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
   }
 
-  if (variable != SATOMI_NULL)
+  if (variable)
     SATOMI_MEMCPY(size, variable, &ret);
 
 #else
 
-  #define SATOMI_ATOMIC_OP(INT) INT o; SATOMI_MEMCPY(size, &o, operand); if (subtracting) o = -o;\
-    INT old = __atomic_fetch_add((volatile INT *)target, o, (int)order); \
-    if (variable != SATOMI_NULL) SATOMI_MEMCPY(size, variable, &old);
-  SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
-  #undef SATOMI_ATOMIC_OP
+  #if defined(__x86_64__)
+
+    #define SATOMI_ATOMIC_ASM(type, affix)                    \
+      type o;                                                 \
+      SATOMI_MEMCPY(size, &o, operand);                       \
+      if (subtracting) o = -o;                                \
+      __asm__ __volatile__                                    \
+      (                                                       \
+        "lock; xadd" affix " %[operand], %[target]\n\t"       \
+        : [target] "+m" (*(type *)target), [operand] "+r" (o) \
+        :                                                     \
+        : "memory"                                            \
+      );                                                      \
+      if (variable)                                           \
+        SATOMI_MEMCPY(size, variable, &o);
+
+    if (size == 1) { SATOMI_ATOMIC_ASM(__UINT8_TYPE__, "b"); }
+    else if (size == 2) { SATOMI_ATOMIC_ASM(__UINT16_TYPE__, "w"); }
+    else if (size == 4) { SATOMI_ATOMIC_ASM(__UINT32_TYPE__, "l"); }
+    else if (size == 8) { SATOMI_ATOMIC_ASM(__UINT64_TYPE__, "q"); }
+
+    #undef SATOMI_ATOMIC_ASM
+
+  #elif defined(__aarch64__)
+
+    // builtin CAS support with ARM LSE 1
+    #ifdef __ARM_FEATURE_ATOMICS
+
+      #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier)                    \
+        type o, temp, original;                                                                                 \
+        SATOMI_MEMCPY(size, &o, operand);                                                                       \
+        if (subtracting) o = -o;                                                                                \
+        __asm__ __volatile__                                                                                    \
+        (                                                                                                       \
+          "ldadd" load_order store_order suffix " " modifier "[operand], " modifier "[original], %[target]\n\t" \
+          : [target] "+Q" (*(type *)target), [original] "=&r" (original)                                        \
+          : [operand] "r" (o)                                                                                   \
+          : "memory"                                                                                            \
+        );                                                                                                      \
+        if (variable)                                                                                           \
+          SATOMI_MEMCPY(size, variable, &original);
+
+    #else
+
+      SATOMI_BOOL success;
+      #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier)\
+        type o, temp, original;                                                             \
+        SATOMI_MEMCPY(size, &o, operand);                                                   \
+        if (subtracting) o = -o;                                                            \
+        __asm__ __volatile__                                                                \
+        (                                                                                   \
+          "1:\n\t"                                                                          \
+          "ld" load_order "xr" suffix " " modifier "[original], %[target]\n\t"              \
+          "add " modifier "[temp], " modifier "[original], " modifier "[operand]\n\t"       \
+          "st" store_order "xr" suffix " %w[success], " modifier "[temp], %[target]\n\t"    \
+          "cbnz %w[success], 1b\n\t"                                                        \
+          msvc_fence                                                                        \
+          : [target] "+Q" (*(type *)target), [success] "=&r" (success),                     \
+            [temp] "=&r" (temp), [original] "=&r" (original)                                \
+          : [operand] "r" (o)                                                               \
+          : "memory"                                                                        \
+        );                                                                                  \
+        if (variable)                                                                       \
+          SATOMI_MEMCPY(size, variable, &original);
+
+    #endif
+
+    if (size == 1) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT8_TYPE__, "b", "%w"); }
+    else if (size == 2) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT16_TYPE__, "h", "%w"); }
+    else if (size == 4) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT32_TYPE__, "", "%w"); }
+    else if (size == 8) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT64_TYPE__, "", "%x"); }
+
+    #undef SATOMI_ATOMIC_ASM
+
+  #endif
 
   else if (size == 16)
   {
-  #if defined(__x86_64__)
-
     __extension__ unsigned __int128 ret, o, intermediate;
-    satomi__atomic_load(size, &ret, target, order);
+    // relaxed because we ONLY care about the value
+    satomi__atomic_load(size, &ret, target, memory_order_relaxed);
     SATOMI_MEMCPY(size, &o, operand);
     if (subtracting)
       o = -o;
 
+    // NOTE: this generates slightly subpar code on armv8-a (>= armv8.1-a with casp is fine though)
+    // because it can't interleave the addition inside the cas loop but it isn't too bad
     do
     {
       intermediate = ret + o;
     } while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
 
-  #elif defined(__aarch64__)
+    if (variable)
+      SATOMI_MEMCPY(size, variable, &ret);
+  }
+#endif
+}
 
-    #if defined(__AARCH64EL__) || \
-      (defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) || \
-      (defined(__LITTLE_ENDIAN__) && !defined(__BIG_ENDIAN__))
+#if defined(__x86_64__)
 
-      // little endian
-      #define SATOMI_ARG_LO "0"
-      #define SATOMI_ARG_HI "1"
+  #define SATOMI_ATOMIC_ASM(type, affix, a_register)          \
+    type o, temp, original;                                   \
+    SATOMI_MEMCPY(size, &o, operand);                         \
+    __asm__ __volatile__                                      \
+    (                                                         \
+      "mov" affix " %[target], " a_register "\n\t"            \
+      "1: mov" affix " %[operand], %[temp]\n\t"               \
+      SATOMI_ATOMIC_OP affix " " a_register ", %[temp]\n\t"   \
+      "lock; cmpxchg" affix " %[temp], %[target]\n\t"         \
+      "jne 1b\n\t"                                            \
+      : [target] "+m" (*(type *)target), [temp] "=&r" (temp), \
+        [original] "+&a" (original)                           \
+      : [operand] "r" (o)                                     \
+      : "cc", "memory"                                        \
+    );                                                        \
+    if (variable)                                             \
+      SATOMI_MEMCPY(size, variable, &original);
 
-    #else
+#elif defined(__aarch64__)
 
-      // big endian
-      #define SATOMI_ARG_LO "1"
-      #define SATOMI_ARG_HI "0"
+  #ifdef __ARM_FEATURE_ATOMICS
 
-    #endif
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, ...)                       \
+      type o, temp, original;                                                                                         \
+      SATOMI_MEMCPY(size, &o, operand);                                                                               \
+      __VA_ARGS__                                                                                                     \
+      __asm__ __volatile__                                                                                            \
+      (                                                                                                               \
+        SATOMI_ATOMIC_OP load_order store_order suffix " " modifier "[operand], " modifier "[original], %[target]\n\t"\
+        : [target] "+Q" (*(type *)target), [original] "=&r" (original)                                                \
+        : [operand] "r" (o)                                                                                           \
+        : "memory"                                                                                                    \
+      );                                                                                                              \
+      if (variable)                                                                                                   \
+        SATOMI_MEMCPY(size, variable, &original);
 
-    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, intermediate, o;
+  #else
 
-    {
-      __extension__ unsigned __int128 temp;
-      SATOMI_MEMCPY(size, &temp, operand);
-      if (subtracting)
-        temp = -temp;
-      SATOMI_MEMCPY(size, &o, &temp);
-    }
-
-    unsigned success;
-
-    #define SATOMI_ATOMIC_ASM(load_order, store_order)                                                        \
-      __asm__ __volatile__                                                                                    \
-      (                                                                                                       \
-        "1:\n\t"                                                                                              \
-        "ld" load_order "xp %x[original_0], %x[original_1], %[target]\n\t"                                    \
-        "adds %x[result_" SATOMI_ARG_LO "], %x[original_" SATOMI_ARG_LO "], %x[operand_" SATOMI_ARG_LO "]\n\t"\
-        "adc %x[result_" SATOMI_ARG_HI "], %x[original_" SATOMI_ARG_HI "], %x[operand_" SATOMI_ARG_HI "]\n\t" \
-        "st" store_order "xp %w[success], %x[result_0], %x[result_1], %[target]\n\t"                          \
-        "cbnz %w[success], 1b\n\t"                                                                            \
-        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),                             \
-          [original_0] "=&r" (ret.v[0]), [original_1] "=&r" (ret.v[1]),                                       \
-          [result_0] "=&r" (intermediate.v[0]), [result_1] "=&r" (intermediate.v[1])                          \
-        : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                                                \
-        : "cc", "memory"                                                                                      \
-      );
-
-    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
-    #undef SATOMI_ARG_LO
-    #undef SATOMI_ARG_HI
-    #undef SATOMI_ATOMIC_ASM
+    #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, ...)   \
+      SATOMI_BOOL success;                                                                        \
+      type o, temp, original;                                                                     \
+      SATOMI_MEMCPY(size, &o, operand);                                                           \
+      __VA_ARGS__                                                                                 \
+      __asm__ __volatile__                                                                        \
+      (                                                                                           \
+        "1:\n\t"                                                                                  \
+        "ld" load_order "xr" suffix " " modifier "[original], %[target]\n\t"                      \
+        SATOMI_ATOMIC_OP " " modifier "[temp], " modifier "[original], " modifier "[operand]\n\t" \
+        "st" store_order "xr" suffix " %w[success], " modifier "[temp], %[target]\n\t"            \
+        "cbnz %w[success], 1b\n\t"                                                                \
+        msvc_fence                                                                                \
+        : [target] "+Q" (*(type *)target), [success] "=&r" (success),                             \
+          [temp] "=&r" (temp), [original] "=&r" (original)                                        \
+        : [operand] "r" (o)                                                                       \
+        : "memory"                                                                                \
+      );                                                                                          \
+      if (variable)                                                                               \
+        SATOMI_MEMCPY(size, variable, &original);
 
   #endif
 
-    if (variable != SATOMI_NULL)
-      SATOMI_MEMCPY(size, variable, &ret);
-  }
-
 #endif
-}
 
 SATOMI_INLINE void satomi__atomic_fetch_and(SATOMI_U64 size,
   void *variable, volatile void *target, void *operand, memory_order order)
@@ -1018,7 +1595,8 @@ SATOMI_INLINE void satomi__atomic_fetch_and(SATOMI_U64 size,
 
   else if (size == 16)
   {
-    satomi__atomic_load(size, &ret, target, order);
+    // relaxed because we ONLY care about the value
+    satomi__atomic_load(size, &ret, target, memory_order_relaxed);
     SATOMI_MEMCPY(size, &o, operand);
 
     struct int128__ intermediate;
@@ -1030,59 +1608,57 @@ SATOMI_INLINE void satomi__atomic_fetch_and(SATOMI_U64 size,
 
   }
 
-  if (variable != SATOMI_NULL)
+  if (variable)
     SATOMI_MEMCPY(size, variable, &ret);
 
 #else
+#if defined(__x86_64__)
 
-  #define SATOMI_ATOMIC_OP(INT) INT o; SATOMI_MEMCPY(size, &o, operand); \
-    INT old = __atomic_fetch_and((volatile INT *)target, o, (int)order); \
-    if (variable != SATOMI_NULL) SATOMI_MEMCPY(size, variable, &old);
-  SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
+  #define SATOMI_ATOMIC_OP "and"
+
+  if (size == 1) { SATOMI_ATOMIC_ASM(__UINT8_TYPE__, "b", "%%al"); }
+  else if (size == 2) { SATOMI_ATOMIC_ASM(__UINT16_TYPE__, "w", "%%ax"); }
+  else if (size == 4) { SATOMI_ATOMIC_ASM(__UINT32_TYPE__, "l", "%%eax"); }
+  else if (size == 8) { SATOMI_ATOMIC_ASM(__UINT64_TYPE__, "q", "%%rax"); }
+
   #undef SATOMI_ATOMIC_OP
+
+#elif defined(__aarch64__)
+
+  // builtin CAS support with ARM LSE 1
+  #ifdef __ARM_FEATURE_ATOMICS
+    #define SATOMI_ATOMIC_OP "ldclr"
+    #define SATOMI_ATOMIC_EXTRA o = ~o;
+  #else
+    #define SATOMI_ATOMIC_OP "and"
+    #define SATOMI_ATOMIC_EXTRA
+  #endif
+
+  if (size == 1) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT8_TYPE__, "b", "%w", SATOMI_ATOMIC_EXTRA); }
+  else if (size == 2) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT16_TYPE__, "h", "%w", SATOMI_ATOMIC_EXTRA); }
+  else if (size == 4) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT32_TYPE__, "", "%w", SATOMI_ATOMIC_EXTRA); }
+  else if (size == 8) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT64_TYPE__, "", "%x", SATOMI_ATOMIC_EXTRA); }
+
+  #undef SATOMI_ATOMIC_OP
+  #undef SATOMI_ATOMIC_EXTRA
+
+#endif
 
   else if (size == 16)
   {
-  #if defined(__x86_64__)
-
     __extension__ unsigned __int128 ret, o, intermediate;
-    satomi__atomic_load(size, &ret, target, order);
+    // relaxed because we ONLY care about the value
+    satomi__atomic_load(size, &ret, target, memory_order_relaxed);
     SATOMI_MEMCPY(size, &o, operand);
     do
     {
       intermediate = ret & o;
     } while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
 
-  #elif defined(__aarch64__)
-
-    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, intermediate, o;
-    SATOMI_MEMCPY(size, &o, operand);
-    unsigned success;
-
-    #define SATOMI_ATOMIC_ASM(load_order, store_order)                              \
-      __asm__ __volatile__                                                          \
-      (                                                                             \
-        "1:\n\t"                                                                    \
-        "ld" load_order "xp %x[original_0], %x[original_1], %[target]\n\t"          \
-        "and %x[result_0], %x[original_0], %x[operand_0]\n\t"                       \
-        "and %x[result_1], %x[original_1], %x[operand_1]\n\t"                       \
-        "st" store_order "xp %w[success], %x[result_0], %x[result_1], %[target]\n\t"\
-        "cbnz %w[success], 1b\n\t"                                                  \
-        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),   \
-          [original_0] "=&r" (ret.v[0]), [original_1] "=&r" (ret.v[1]),             \
-          [result_0] "=&r" (intermediate.v[0]), [result_1] "=&r" (intermediate.v[1])\
-        : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                      \
-        : "cc", "memory"                                                            \
-      );
-
-    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
-    #undef SATOMI_ATOMIC_ASM
-
-  #endif
-
-    if (variable != SATOMI_NULL)
+    if (variable)
       SATOMI_MEMCPY(size, variable, &ret);
   }
+
 #endif
 }
 
@@ -1109,7 +1685,8 @@ SATOMI_INLINE void satomi__atomic_fetch_or(SATOMI_U64 size,
 
   else if (size == 16)
   {
-    satomi__atomic_load(size, &ret, target, order);
+    // relaxed because we ONLY care about the value
+    satomi__atomic_load(size, &ret, target, memory_order_relaxed);
     SATOMI_MEMCPY(size, &o, operand);
 
     struct int128__ intermediate;
@@ -1120,57 +1697,51 @@ SATOMI_INLINE void satomi__atomic_fetch_or(SATOMI_U64 size,
     } while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
   }
 
-  if (variable != SATOMI_NULL)
+  if (variable)
     SATOMI_MEMCPY(size, variable, &ret);
 
 #else
+#if defined(__x86_64__)
 
-  #define SATOMI_ATOMIC_OP(INT) INT o; SATOMI_MEMCPY(size, &o, operand); \
-    INT ret = __atomic_fetch_or((volatile INT *)target, o, (int)order); \
-    if (variable != SATOMI_NULL) SATOMI_MEMCPY(size, variable, &ret);
-  SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
+  #define SATOMI_ATOMIC_OP "or"
+
+  if (size == 1) { SATOMI_ATOMIC_ASM(__UINT8_TYPE__, "b", "%%al"); }
+  else if (size == 2) { SATOMI_ATOMIC_ASM(__UINT16_TYPE__, "w", "%%ax"); }
+  else if (size == 4) { SATOMI_ATOMIC_ASM(__UINT32_TYPE__, "l", "%%eax"); }
+  else if (size == 8) { SATOMI_ATOMIC_ASM(__UINT64_TYPE__, "q", "%%rax"); }
+
   #undef SATOMI_ATOMIC_OP
 
-  if (size == 16)
-  {
-  #if defined(__x86_64__)
+#elif defined(__aarch64__)
 
+  // builtin CAS support with ARM LSE 1
+  #ifdef __ARM_FEATURE_ATOMICS
+    #define SATOMI_ATOMIC_OP "ldset"
+  #else
+    #define SATOMI_ATOMIC_OP "orr"
+  #endif
+
+  if (size == 1) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT8_TYPE__, "b", "%w"); }
+  else if (size == 2) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT16_TYPE__, "h", "%w"); }
+  else if (size == 4) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT32_TYPE__, "", "%w"); }
+  else if (size == 8) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT64_TYPE__, "", "%x"); }
+
+  #undef SATOMI_ATOMIC_OP
+
+#endif
+
+  else if (size == 16)
+  {
     __extension__ unsigned __int128 ret, o, intermediate;
-    satomi__atomic_load(size, &ret, target, order);
+    // relaxed because we ONLY care about the value
+    satomi__atomic_load(size, &ret, target, memory_order_relaxed);
     SATOMI_MEMCPY(size, &o, operand);
     do
     {
       intermediate = ret | o;
     } while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
 
-  #elif defined(__aarch64__)
-
-    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, intermediate, o;
-    SATOMI_MEMCPY(size, &o, operand);
-    unsigned success;
-
-    #define SATOMI_ATOMIC_ASM(load_order, store_order)                              \
-      __asm__ __volatile__                                                          \
-      (                                                                             \
-        "1:\n\t"                                                                    \
-        "ld" load_order "xp %x[original_0], %x[original_1], %[target]\n\t"          \
-        "orr %x[result_0], %x[original_0], %x[operand_0]\n\t"                       \
-        "orr %x[result_1], %x[original_1], %x[operand_1]\n\t"                       \
-        "st" store_order "xp %w[success], %x[result_0], %x[result_1], %[target]\n\t"\
-        "cbnz %w[success], 1b\n\t"                                                  \
-        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),   \
-          [original_0] "=&r" (ret.v[0]), [original_1] "=&r" (ret.v[1]),             \
-          [result_0] "=&r" (intermediate.v[0]), [result_1] "=&r" (intermediate.v[1])\
-        : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                      \
-        : "cc", "memory"                                                            \
-      );
-
-    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
-    #undef SATOMI_ATOMIC_ASM
-
-  #endif
-
-    if (variable != SATOMI_NULL)
+    if (variable)
       SATOMI_MEMCPY(size, variable, &ret);
   }
 #endif
@@ -1198,7 +1769,8 @@ SATOMI_INLINE void satomi__atomic_fetch_xor(SATOMI_U64 size,
 
   else if (size == 16)
   {
-    satomi__atomic_load(size, &ret, target, order);
+    // relaxed because we ONLY care about the value
+    satomi__atomic_load(size, &ret, target, memory_order_relaxed);
     SATOMI_MEMCPY(size, &o, operand);
 
     struct int128__ intermediate;
@@ -1209,61 +1781,57 @@ SATOMI_INLINE void satomi__atomic_fetch_xor(SATOMI_U64 size,
     } while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
   }
 
-  if (variable != SATOMI_NULL)
+  if (variable)
     SATOMI_MEMCPY(size, variable, &ret);
 
 #else
+#if defined(__x86_64__)
 
-  #define SATOMI_ATOMIC_OP(INT) INT o; SATOMI_MEMCPY(size, &o, operand); \
-    INT ret = __atomic_fetch_xor((volatile INT *)target, o, (int)order); \
-    if (variable != SATOMI_NULL) SATOMI_MEMCPY(size, variable, &ret);
-  SATOMI_CHOOSE_SIZE(size, SATOMI_ATOMIC_OP)
+  #define SATOMI_ATOMIC_OP "xor"
+
+  if (size == 1) { SATOMI_ATOMIC_ASM(__UINT8_TYPE__, "b", "%%al"); }
+  else if (size == 2) { SATOMI_ATOMIC_ASM(__UINT16_TYPE__, "w", "%%ax"); }
+  else if (size == 4) { SATOMI_ATOMIC_ASM(__UINT32_TYPE__, "l", "%%eax"); }
+  else if (size == 8) { SATOMI_ATOMIC_ASM(__UINT64_TYPE__, "q", "%%rax"); }
+
   #undef SATOMI_ATOMIC_OP
+
+#elif defined(__aarch64__)
+
+  // builtin CAS support with ARM LSE 1
+  #ifdef __ARM_FEATURE_ATOMICS
+    #define SATOMI_ATOMIC_OP "ldeor"
+  #else
+    #define SATOMI_ATOMIC_OP "eor"
+  #endif
+
+  if (size == 1) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT8_TYPE__, "b", "%w"); }
+  else if (size == 2) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT16_TYPE__, "h", "%w"); }
+  else if (size == 4) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT32_TYPE__, "", "%w"); }
+  else if (size == 8) { SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, __UINT64_TYPE__, "", "%x"); }
+
+  #undef SATOMI_ATOMIC_OP
+
+#endif
 
   else if (size == 16)
   {
-  #if defined(__x86_64__)
-
     __extension__ unsigned __int128 ret, o, intermediate;
-    satomi__atomic_load(size, &ret, target, order);
+    // relaxed because we ONLY care about the value
+    satomi__atomic_load(size, &ret, target, memory_order_relaxed);
     SATOMI_MEMCPY(size, &o, operand);
     do
     {
       intermediate = ret ^ o;
     } while (!satomi__atomic_compare_exchange_strong(size, target, &ret, &intermediate, order));
 
-  #elif defined(__aarch64__)
-
-    struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } ret, intermediate, o;
-    SATOMI_MEMCPY(size, &o, operand);
-    unsigned success;
-
-    #define SATOMI_ATOMIC_ASM(load_order, store_order)                              \
-      __asm__ __volatile__                                                          \
-      (                                                                             \
-        "1:\n\t"                                                                    \
-        "ld" load_order "xp %x[original_0], %x[original_1], %[target]\n\t"          \
-        "eor %x[result_0], %x[original_0], %x[operand_0]\n\t"                       \
-        "eor %x[result_1], %x[original_1], %x[operand_1]\n\t"                       \
-        "st" store_order "xp %w[success], %x[result_0], %x[result_1], %[target]\n\t"\
-        "cbnz %w[success], 1b\n\t"                                                  \
-        : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),   \
-          [original_0] "=&r" (ret.v[0]), [original_1] "=&r" (ret.v[1]),             \
-          [result_0] "=&r" (intermediate.v[0]), [result_1] "=&r" (intermediate.v[1])\
-        : [operand_0] "Lr" (o.v[0]), [operand_1] "Lr" (o.v[1])                      \
-        : "cc", "memory"                                                            \
-      );
-
-    SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
-    #undef SATOMI_ATOMIC_ASM
-
-  #endif
-
-    if (variable != SATOMI_NULL)
+    if (variable)
       SATOMI_MEMCPY(size, variable, &ret);
   }
 #endif
 }
+
+#undef SATOMI_ATOMIC_ASM
 
 
 
@@ -1346,7 +1914,7 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
     }
   }
 
-  if (variable != SATOMI_NULL)
+  if (variable)
     SATOMI_MEMCPY(size, variable, &ret);
 
 #else
@@ -1364,7 +1932,7 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
   struct satomi__waiting_slot *slot = SATOMI_GET_WAITING_SLOT(target);
   (void)__atomic_fetch_add(&slot->wait_count, 1, __ATOMIC_SEQ_CST);
 
-  int *address = SATOMI_NULL;
+  int *address = 0;
   int compare;
 
   if (size >= sizeof(slot->version) &&
@@ -1419,7 +1987,7 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
       "mov %%rax, %[result]"
       : [result] "=r" (result)
       : [syscall_number] "Z" (SATOMI_SYS_FUTEX), [address] "r" (address),
-        [futex_op] "Z" (SATOMI_WAIT_OP), [compare] "r" (compare), [timeout] "Z" (SATOMI_NULL)
+        [futex_op] "Z" (SATOMI_WAIT_OP), [compare] "r" (compare), [timeout] "Z" (0)
       : "rax", "rdi", "rsi", "rdx", "r10"
     );
 
@@ -1437,7 +2005,7 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
       "mov %x[result], x0"
       : [result] "=r" (result)
       : [syscall_number] "M" (SATOMI_SYS_FUTEX), [address] "r" (address),
-        [futex_op] "N" (SATOMI_WAIT_OP), [compare] "r" (compare), [timeout] "N" (SATOMI_NULL)
+        [futex_op] "N" (SATOMI_WAIT_OP), [compare] "r" (compare), [timeout] "N" (0)
       : "w8", "x0", "x1", "x2", "x3"
     );
 
@@ -1457,7 +2025,7 @@ SATOMI_INLINE void satomi__atomic_wait(SATOMI_U64 size, void *variable,
 
   (void)__atomic_fetch_sub(&slot->wait_count, 1, __ATOMIC_RELEASE);
 
-  if (variable != SATOMI_NULL)
+  if (variable)
     SATOMI_MEMCPY(size, variable, &current);
 #endif
 }
@@ -1487,7 +2055,7 @@ SATOMI_INLINE void satomi__atomic_notify_one(SATOMI_U64 size, volatile void *tar
   if (!is_anyone_waiting)
     return;
 
-  int *address = SATOMI_NULL;
+  int *address = 0;
   int waiters_to_wake_up = 1;
 
   if (size >= sizeof(slot->version) &&
@@ -1543,7 +2111,7 @@ SATOMI_INLINE void satomi__atomic_notify_all(SATOMI_U64 size, volatile void *tar
   if (!is_anyone_waiting)
       return;
 
-  int *address = SATOMI_NULL;
+  int *address = 0;
 
   if (size >= sizeof(slot->version) &&
     (((__UINTPTR_TYPE__)target) % sizeof(int)) == 0)
@@ -1586,13 +2154,13 @@ SATOMI_INLINE void satomi__atomic_notify_all(SATOMI_U64 size, volatile void *tar
 
 #if defined(__GNUC__) && !defined(__clang__)
   #pragma GCC diagnostic pop
+#elif defined(__clang__)
+  #pragma GCC diagnostic pop
 #endif
 
-#undef SATOMI_NULL
 #undef SATOMI_BOOL
 #undef SATOMI_ALIGNAS
 #undef SATOMI_U64
-#undef SATOMI_STATIC_ASSERT
 #undef SATOMI_CHECK_PRECONDITIONS
 #undef SATOMI_COMPILER_BARRIER
 #undef SATOMI_TRAP
@@ -1600,8 +2168,8 @@ SATOMI_INLINE void satomi__atomic_notify_all(SATOMI_U64 size, volatile void *tar
 #undef SATOMI_INLINE
 #undef SATOMI_CHOOSE_MEMORY_ORDER
 #undef SATOMI_CHOOSE_MEMORY_ORDER_ASM
+#undef SATOMI_MSVC_STL_SEQ_CST_FENCE
 #undef SATOMI_CHOOSE_SIZE
-#undef SATOMI_MEMORY_LOAD_ACQUIRE_BARRIER
 #undef SATOMI_COMPILER_OR_MEMORY_BARRIER
 
 
@@ -1651,40 +2219,40 @@ SATOMI_INLINE void satomi__atomic_notify_all(SATOMI_U64 size, volatile void *tar
     (SATOMI_ASSERT(sizeof(*(target)) == sizeof(*(expected)) && sizeof(*(target)) == sizeof(*(desired))), \
     satomi__atomic_compare_exchange_weak(sizeof(*(target)), target, expected, desired, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
 
-  #define atomic_exchange(variable, target, value, ...) \
+  #define atomic_exchange(ret, target, value, ...) \
     (SATOMI_ASSERT(sizeof(*(target)) == sizeof(*(value))), \
-    satomi__atomic_exchange(sizeof(*(target)), variable, target, value, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
+    satomi__atomic_exchange(sizeof(*(target)), ret, target, value, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
 
-  #define atomic_load(variable, target, ...) \
-    satomi__atomic_load(sizeof(*(target)), variable, target, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__))
+  #define atomic_load(ret, target, ...) \
+    satomi__atomic_load(sizeof(*(target)), ret, target, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__))
 
   #define atomic_store(target, value, ...) \
     (SATOMI_ASSERT(sizeof(*(target)) == sizeof(*(value))), \
     satomi__atomic_store(sizeof(*(target)), target, value, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
 
-  #define atomic_fetch_add(variable, target, operand, ...) \
+  #define atomic_fetch_add(ret, target, operand, ...) \
     (SATOMI_ASSERT(sizeof(*(target)) == sizeof(*(operand))), \
-    satomi__atomic_fetch_add(sizeof(*(target)), variable, target, operand, 0, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
+    satomi__atomic_fetch_add(sizeof(*(target)), ret, target, operand, 0, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
 
-  #define atomic_fetch_sub(variable, target, operand, ...) \
+  #define atomic_fetch_sub(ret, target, operand, ...) \
     (SATOMI_ASSERT(sizeof(*(target)) == sizeof(*(operand))), \
-    satomi__atomic_fetch_add(sizeof(*(target)), variable, target, operand, 1, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
+    satomi__atomic_fetch_add(sizeof(*(target)), ret, target, operand, 1, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
 
-  #define atomic_fetch_and(variable, target, operand, ...) \
+  #define atomic_fetch_and(ret, target, operand, ...) \
     (SATOMI_ASSERT(sizeof(*(target)) == sizeof(*(operand))), \
-    satomi__atomic_fetch_and(sizeof(*(target)), variable, target, operand, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
+    satomi__atomic_fetch_and(sizeof(*(target)), ret, target, operand, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
 
-  #define atomic_fetch_or(variable, target, operand, ...) \
+  #define atomic_fetch_or(ret, target, operand, ...) \
     (SATOMI_ASSERT(sizeof(*(target)) == sizeof(*(operand))), \
-    satomi__atomic_fetch_or(sizeof(*(target)), variable, target, operand, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
+    satomi__atomic_fetch_or(sizeof(*(target)), ret, target, operand, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
 
-  #define atomic_fetch_xor(variable, target, operand, ...) \
+  #define atomic_fetch_xor(ret, target, operand, ...) \
     (SATOMI_ASSERT(sizeof(*(target)) == sizeof(*(operand))), \
-    satomi__atomic_fetch_xor(sizeof(*(target)), variable, target, operand, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
+    satomi__atomic_fetch_xor(sizeof(*(target)), ret, target, operand, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
 
-  #define atomic_wait(variable, target, expected, ...) \
+  #define atomic_wait(ret, target, expected, ...) \
     (SATOMI_ASSERT(sizeof(*(target)) == sizeof(*(expected))), \
-    satomi__atomic_wait(sizeof(*(target)), variable, target, expected, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
+    satomi__atomic_wait(sizeof(*(target)), ret, target, expected, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__)))
 
   #define atomic_notify_one(target, ...) \
     satomi__atomic_notify_one(sizeof(*(target)), target, SATOMI_DEFAULT_OR(memory_order, memory_order_seq_cst, __VA_ARGS__))
@@ -1696,7 +2264,5 @@ SATOMI_INLINE void satomi__atomic_notify_all(SATOMI_U64 size, volatile void *tar
   #if defined(__cplusplus) && defined(__GNUC__)
     #pragma GCC diagnostic pop
   #endif
-
-#endif
 
 #endif

@@ -35,10 +35,9 @@ In the C++20 version:
 
 ## Warnings and Caveats
 1. If you're using the C99 version of the library, please **MAKE SURE TO CLEAR PADDING** bits otherwise `compare_exchange`s will **FAIL** even if the value-representation matches. In the C++20 version that's taken care of by intrinsics that are not available in C99.
-2. Only x86-64 and arm64 are supported.
+2. Only x86-64 and aarch64 (little endian only) are supported.
 3. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks. Create your own mechanisms with the atomics here (using the wait/notify primitives) if you have such a use case.
 4. When using the free functions or C++20 atomic_ref to do atomic operations you have to make sure your variables are self-aligned (meaning `address of object` % `size of object` == 0). If alignment isn't honoured the functions WILL abort (`SIGILL`/`SIGTRAP`) the program because you will get UB otherwise.
-5. On gcc/clang this library currently depends on libc for atomic intrisincs for <= 8 bytes, which are universally lock-less, but generally do not inline corresponding instructions on arm64 (will most likely change this in the future).
 
 
 ## Examples
