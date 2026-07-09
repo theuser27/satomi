@@ -31,13 +31,13 @@ In the C++20 version:
 
 1. The free functions take regular `T &` instead of `satomi::atomic<T> *`, so that regular variables can also be treated atomically if needs be.
 2. `atomic_wait` internally performs `atomic_load`s, so the most recent load is returned from the function.
-3. No operators are overloaded to discourage the bad habit of treating atomics like regular variables.
+3. No operators are overloaded in the `atomic` class to discourage the bad habit of treating atomics like regular variables.
 
 ## Warnings and Caveats
 1. If you're using the C99 version of the library, please **MAKE SURE TO CLEAR PADDING** bits otherwise `compare_exchange`s will **FAIL** even if the value-representation matches. In the C++20 version that's taken care of by intrinsics that are not available in C99.
 2. Only x86-64 and aarch64 (little endian only) are supported.
 3. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks. Create your own mechanisms with the atomics here (using the wait/notify primitives) if you have such a use case.
-4. When using the free functions or C++20 atomic_ref to do atomic operations you have to make sure your variables are self-aligned (meaning `address of object` % `size of object` == 0). If alignment isn't honoured the functions WILL abort (`SIGILL`/`SIGTRAP`) the program because you will get UB otherwise.
+4. When using the free functions or C++20 atomic_ref to do atomic operations you have to make sure your variables are self-aligned (meaning `object address` % `object size` == 0). If alignment isn't honoured the functions WILL abort (`SIGILL`/`SIGTRAP`) the program because you will get UB otherwise.
 
 
 ## Examples
@@ -45,12 +45,11 @@ In the C++20 version:
 ### C
 ```c
 volatile int a = 1;
-int add = 1;
+int add = 1, b;
 atomic_fetch_add(NULL, &a, &add, memory_order_relaxed);
 add = 2;
-atomic_fetch_sub(NULL, &a, &add, memory_order_acq_rel);
-int b;
-atomic_load(&b, &a, memory_order_acquire);
+atomic_fetch_sub(&b, &a, &add, memory_order_acq_rel);
+assert(b == 0);
 
 uint16_t wants_to_be_atomic = 0;
 uint16_t store = 5;
@@ -90,8 +89,8 @@ atomic_compare_exchange_weak(&uuid, &uuid_copy, &new_uuid, memory_order_acq_rel)
 ```c++
 satomi::atomic a = 1;
 a.fetch_add(1, satomi::memory_order_relaxed);
-a.fetch_sub(2, satomi::memory_order_acq_rel);
-int b = a.load(satomi::memory_order_acquire);
+int b = a.fetch_sub(2, satomi::memory_order_acq_rel);
+assert(b == 0);
 
 uint16_t wants_to_be_atomic = 0;
 satomi::atomic_store(wants_to_be_atomic, uint16_t(5), satomi::memory_order_seq_cst);

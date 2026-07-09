@@ -33,7 +33,7 @@
 //    Unfortunately no compiler currently provides a macro definition to check for this automatically so the user has to define something
 //    and '+lse128' still needs to be enabled otherwise it will fail to compile, i.e. '-march=armv9.4-a+lse128'
 //    https://developer.arm.com/documentation/ddi0602/2024-03/Base-Instructions/SWPP--SWPPA--SWPPAL--SWPPL--Swap-quadword-in-memory-
-// 5. SATOMI_BREAK_ARM_MSVC_ABI_COMPATIBILITY - forces NON-conformance on clang/mingw with MSVC STL for ARM64 (without LSE) on Windows.
+// 5. SATOMI_BREAK_ARM_MSVC_ABI_COMPATIBILITY - forces NON-conformance on clang/mingw with MSVC STL for ARM64 (without LSE capability) on Windows.
 //    By default an extra memory barrier (dmb ish) will be inserted after any successful stores
 //    (atomic_compare_exchange_*, atomic_exchange, atomic_store, atomic_fetch_*) if memory_order == seq_cst.
 //    Use this if you want to avoid the cost of the extra fence if you're not interfacing with the MSVC STL. For more info:
@@ -382,6 +382,8 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
 
 #elif defined (__x86_64__)
 
+  (void)order;
+
   #define SATOMI_ATOMIC_ASM(type, affix)                  \
     __asm__ __volatile__                                  \
     (                                                     \
@@ -414,7 +416,8 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
       : "cc", "memory"
     );
 
-    SATOMI_MEMCPY(size, expected, &e);
+    if (!success)
+      SATOMI_MEMCPY(size, expected, &e);
   }
 
   return success;
@@ -440,8 +443,9 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
       SATOMI_MEMCPY(size, &e, expected);                        \
       ret = e;                                                  \
       SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, type, __VA_ARGS__); \
+      if (e == ret) return 1;                                   \
       SATOMI_MEMCPY(size, expected, &ret);                      \
-      return e == ret
+      return 0;
 
     if (size == 1) { SATOMI_PASTE_BLOCK(order, __UINT8_TYPE__, "b", "%w"); }
     else if (size == 2) { SATOMI_PASTE_BLOCK(order, __UINT16_TYPE__, "h", "%w"); }
@@ -474,11 +478,13 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
 
       SATOMI_CHOOSE_MEMORY_ORDER_ASM(order);
 
-      SATOMI_BOOL success = e[0] == x8 && e[1] == x9;
+      if (e[0] == x8 && e[1] == x9)
+        return 1;
+
       e[0] = x8;
       e[1] = x9;
       SATOMI_MEMCPY(size, expected, &e);
-      return success;
+      return 0;
     }
 
     #undef SATOMI_PASTE_BLOCK
@@ -521,8 +527,6 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
       SATOMI_MEMCPY(size, &e, expected);
       SATOMI_MEMCPY(size, &d, desired);
 
-      unsigned success;
-
       #undef SATOMI_ATOMIC_ASM
       #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, ...)               \
         __asm__ __volatile__                                                            \
@@ -546,7 +550,8 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_strong(SATOMI_U64 size
 
       SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
 
-      SATOMI_MEMCPY(size, expected, &out);
+      if (!success)
+        SATOMI_MEMCPY(size, expected, &out);
 
       return success;
     }
@@ -617,7 +622,8 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size,
     #define SATOMI_PASTE_BLOCK(order, type, ...)                \
       type out;                                                 \
       SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, type, __VA_ARGS__); \
-      SATOMI_MEMCPY(size, expected, &out);                      \
+      if (!success)                                             \
+        SATOMI_MEMCPY(size, expected, &out);                    \
       return success
 
     SATOMI_BOOL success;
@@ -654,7 +660,8 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size,
       SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
       #undef SATOMI_ATOMIC_ASM
 
-      SATOMI_MEMCPY(size, expected, &out);
+      if (!success)
+        SATOMI_MEMCPY(size, expected, &out);
       return success;
     }
 
@@ -1165,16 +1172,26 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
     // Intel Software Developer Manual Volume 3, Guaranteed Atomic Operations
     // Processors supporting AVX guarantee aligned vector moves to be atomic.
 
-    // the manual load from memory inside the asm block is
-    // because clang "doesn't know how to handle indirect register inputs yet for constraint 'x'"
-    __asm__ __volatile__
-    (
-      "vmovdqa %[value], %%xmm8\n\t"
-      "vmovdqa %%xmm8, %[storage]\n\t"
-      : [storage] "=m" (*(struct uint128__ *)target)
-      : [value] "m" (*(struct uint128__ *)value)
-      : "xmm8", "memory"
-    );
+    #if __clang__
+      // the manual load from memory inside the asm block is because
+      // clang "doesn't know how to handle indirect register inputs yet for constraint 'x'"
+      __asm__ __volatile__
+      (
+        "vmovdqa %[value], %%xmm8\n\t"
+        "vmovdqa %%xmm8, %[storage]\n\t"
+        : [storage] "=m" (target)
+        : [value] "m" (value)
+        : "xmm8", "memory"
+      );
+    #else
+      __asm__ __volatile__
+      (
+          "vmovdqa %[value], %[storage]\n\t"
+          : [storage] "=m" (target)
+          : [value] "x" (value)
+          : "memory"
+      );
+    #endif
 
   #else
 
