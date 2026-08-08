@@ -104,10 +104,10 @@ extern "C"
   #define SATOMI_U64 unsigned __int64
 
   #define SATOMI_CHOOSE_SIZE(macro, size, base, ...) \
-    if constexpr (sizeof(T) == 1) { __int8 out; SATOMI_CHOOSE_MEMORY_ORDER(order, out = base##8, (macro(__int8))); __VA_ARGS__ }        \
-    else if constexpr (sizeof(T) == 2) { __int16 out; SATOMI_CHOOSE_MEMORY_ORDER(order, out = base##16, (macro(__int16))); __VA_ARGS__ } \
-    else if constexpr (sizeof(T) == 4) { long out; SATOMI_CHOOSE_MEMORY_ORDER(order, out = base, (macro(long))); __VA_ARGS__ }        \
-    else if constexpr (sizeof(T) == 8) { __int64 out; SATOMI_CHOOSE_MEMORY_ORDER(order, out = base##64, (macro(__int64))); __VA_ARGS__ }
+    if constexpr (size == 1) { __int8 out; SATOMI_CHOOSE_MEMORY_ORDER(order, out = base##8, (macro(__int8))); __VA_ARGS__ }        \
+    else if constexpr (size == 2) { __int16 out; SATOMI_CHOOSE_MEMORY_ORDER(order, out = base##16, (macro(__int16))); __VA_ARGS__ } \
+    else if constexpr (size == 4) { long out; SATOMI_CHOOSE_MEMORY_ORDER(order, out = base, (macro(long))); __VA_ARGS__ }        \
+    else if constexpr (size == 8) { __int64 out; SATOMI_CHOOSE_MEMORY_ORDER(order, out = base##64, (macro(__int64))); __VA_ARGS__ }
 
   #if defined(_M_ARM64) || defined(_M_ARM64EC)
 

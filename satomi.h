@@ -736,7 +736,7 @@ SATOMI_INLINE void satomi__atomic_exchange(SATOMI_U64 size, void *variable,
       ".align 16\n\t"
       "1: lock; cmpxchg16b %[target_0]\n\t"
       "jne 1b\n\t"
-      : [target_0] "+m" (((volatile uint128__ *)target)[0]),
+      : [target_0] "+m" (((volatile struct uint128__ *)target)[0]),
         [target_1] "+m" (((volatile SATOMI_U64 *)target)[1]),
         "=&a" (out.v[0]), "=&d" (out.v[1])
       : "b" (d.v[0]), "c" (d.v[1])

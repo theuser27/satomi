@@ -44,75 +44,92 @@ In the C++20 version:
 
 ### C
 ```c
-volatile int a = 1;
-int add = 1, b;
-atomic_fetch_add(NULL, &a, &add, memory_order_relaxed);
-add = 2;
-atomic_fetch_sub(&b, &a, &add, memory_order_acq_rel);
-assert(b == 0);
+#include <stdint.h>
+#include <stddef.h>
 
-uint16_t wants_to_be_atomic = 0;
-uint16_t store = 5;
-atomic_store(&wants_to_be_atomic, &store, memory_order_seq_cst);
-uint16_t c;
-atomic_load(&c, &wants_to_be_atomic, memory_order_relaxed);
-store = 2;
-atomic_compare_exchange_strong(&wants_to_be_atomic, &c, &store, memory_order_acq_rel);
+#include <satomi.h>
 
-volatile double d = 32.0;
-double e;
-atomic_load(&e, &d, memory_order_acquire);
-// some math...
-atomic_store(&d, &e, memory_order_release);
-
-#if defined(_MSC_VER) && !defined(__clang__)
-  #define ALIGNAS(x) __declspec(align(x))
-#else
-  #define ALIGNAS(x) __attribute__((aligned(x)))
-#endif
-
-struct ALIGNAS(16) uuid_t
+int main()
 {
-  uint32_t part_1;
-  uint16_t part_2;
-  uint16_t part_3;
-  uint64_t part_4;
-} uuid = { 0x56264c8d, 0xbb85, 0x44dc, 0xb3ddf6926baad9ee };
-
-struct uuid_t uuid_copy;
-atomic_load(&uuid_copy, &uuid, memory_order_relaxed);
-struct uuid_t new_uuid = { 0xc34d62f8, 0x8b76, 0x425c, 0x99e88c4bd60f227c };
-atomic_compare_exchange_weak(&uuid, &uuid_copy, &new_uuid, memory_order_acq_rel);
+  volatile int a = 1;
+  int add = 1, b;
+  atomic_fetch_add(NULL, &a, &add, memory_order_relaxed);
+  add = 2;
+  atomic_fetch_sub(&b, &a, &add, memory_order_acq_rel);
+  assert(b == 2);
+  assert(a == 0);
+  
+  uint16_t wants_to_be_atomic = 0;
+  uint16_t store = 5;
+  atomic_store(&wants_to_be_atomic, &store, memory_order_seq_cst);
+  uint16_t c;
+  atomic_load(&c, &wants_to_be_atomic, memory_order_relaxed);
+  store = 2;
+  atomic_compare_exchange_strong(&wants_to_be_atomic, &c, &store, memory_order_acq_rel);
+  
+  volatile double d = 32.0;
+  double e;
+  atomic_load(&e, &d, memory_order_acquire);
+  // some math...
+  atomic_store(&d, &e, memory_order_release);
+  
+  #if defined(_MSC_VER) && !defined(__clang__)
+    #define ALIGNAS(x) __declspec(align(x))
+  #else
+    #define ALIGNAS(x) __attribute__((aligned(x)))
+  #endif
+  
+  struct ALIGNAS(16) uuid_t
+  {
+    uint32_t part_1;
+    uint16_t part_2;
+    uint16_t part_3;
+    uint64_t part_4;
+  } uuid = { 0x56264c8d, 0xbb85, 0x44dc, 0xb3ddf6926baad9ee };
+  
+  struct uuid_t uuid_copy;
+  atomic_load(&uuid_copy, &uuid, memory_order_relaxed);
+  struct uuid_t new_uuid = { 0xc34d62f8, 0x8b76, 0x425c, 0x99e88c4bd60f227c };
+  atomic_compare_exchange_weak(&uuid, &uuid_copy, &new_uuid, memory_order_acq_rel);
+}
 ```
 
 ### C++
 ```c++
-satomi::atomic a = 1;
-a.fetch_add(1, satomi::memory_order_relaxed);
-int b = a.fetch_sub(2, satomi::memory_order_acq_rel);
-assert(b == 0);
+#include <stdint.h>
 
-uint16_t wants_to_be_atomic = 0;
-satomi::atomic_store(wants_to_be_atomic, uint16_t(5), satomi::memory_order_seq_cst);
-uint16_t c = satomi::atomic_load(wants_to_be_atomic, satomi::memory_order_relaxed);
-satomi::atomic_compare_exchange_strong(wants_to_be_atomic, c, uint16_t(2), satomi::memory_order_acq_rel);
+#include <satomi.hpp>
 
-satomi::atomic<double> d = 32.0;
-auto e = d.load(satomi::memory_order_acquire);
-// some math...
-d.store(e, satomi::memory_order_release);
-
-struct alignas(16) uuid_t
+int main()
 {
-  constexpr bool operator==(const uuid_t &) const = default;
-
-  uint32_t part_1;
-  uint16_t part_2;
-  uint16_t part_3;
-  uint64_t part_4;
-} uuid = { 0x56264c8d, 0xbb85, 0x44dc, 0xb3ddf6926baad9ee };
-
-satomi::atomic_ref uuid_ref{ uuid };
-auto uuid_copy = uuid_ref.load(satomi::memory_order_relaxed);
-uuid_ref.compare_exchange_weak(uuid_copy, { 0xc34d62f8, 0x8b76, 0x425c, 0x99e88c4bd60f227c }, satomi::memory_order_acq_rel);
+  satomi::atomic a = 1;
+  a.fetch_add(1, satomi::memory_order_relaxed);
+  int b = a.fetch_sub(2, satomi::memory_order_acq_rel);
+  assert(b == 2);
+  assert(a.load(satomi::memory_order_relaxed) == 0);
+  
+  uint16_t wants_to_be_atomic = 0;
+  satomi::atomic_store(wants_to_be_atomic, uint16_t(5), satomi::memory_order_seq_cst);
+  uint16_t c = satomi::atomic_load(wants_to_be_atomic, satomi::memory_order_relaxed);
+  satomi::atomic_compare_exchange_strong(wants_to_be_atomic, c, uint16_t(2), satomi::memory_order_acq_rel);
+  
+  satomi::atomic<double> d = 32.0;
+  auto e = d.load(satomi::memory_order_acquire);
+  // some math...
+  d.store(e, satomi::memory_order_release);
+  
+  struct alignas(16) uuid_t
+  {
+    constexpr bool operator==(const uuid_t &) const = default;
+  
+    uint32_t part_1;
+    uint16_t part_2;
+    uint16_t part_3;
+    uint64_t part_4;
+  } uuid = { 0x56264c8d, 0xbb85, 0x44dc, 0xb3ddf6926baad9ee };
+  
+  satomi::atomic_ref uuid_ref{ uuid };
+  auto uuid_copy = uuid_ref.load(satomi::memory_order_relaxed);
+  uuid_ref.compare_exchange_weak(uuid_copy, { 0xc34d62f8, 0x8b76, 0x425c, 0x99e88c4bd60f227c }, satomi::memory_order_acq_rel);
+}
 ```
