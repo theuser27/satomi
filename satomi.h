@@ -736,7 +736,7 @@ SATOMI_INLINE void satomi__atomic_exchange(SATOMI_U64 size, void *variable,
       ".align 16\n\t"
       "1: lock; cmpxchg16b %[target_0]\n\t"
       "jne 1b\n\t"
-      : [target_0] "+m" (((volatile struct uint128__ *)target)[0]),
+      : [target_0] "+m" (((volatile SATOMI_U64 *)target)[0]),
         [target_1] "+m" (((volatile SATOMI_U64 *)target)[1]),
         "=&a" (out.v[0]), "=&d" (out.v[1])
       : "b" (d.v[0]), "c" (d.v[1])
@@ -1017,7 +1017,7 @@ SATOMI_INLINE void satomi__atomic_load(SATOMI_U64 size,
         "ld" load_order "p " "%x[out_0], %x[out_1], %[target]\n\t"            \
         post_fence                                                            \
         : [out_0] "=&r" (out.v[0]), [out_1] "=r" (out.v[1])                   \
-        : [target] "Q" (*(uint128__ *)target)                                 \
+        : [target] "Q" (*(struct uint128__ *)target)                          \
         : "memory"                                                            \
       );
 
@@ -1334,7 +1334,7 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
   #elif __ARM_FEATURE_ATOMICS
 
     // use casp
-    uint128__ out = v;
+    struct uint128__ out = v;
     while (!satomi__atomic_compare_exchange_strong(size, target, &out, &v, order)) { }
 
   #else
@@ -1342,7 +1342,7 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
     // not redirecting this to satomi__atomic_compare_exchange_strong
     // because it's more effient to rewrite the algo
 
-    uint128__ out;
+    struct uint128__ out;
     SATOMI_BOOL success;
 
     #define SATOMI_ATOMIC_ASM_LOOP(store_order)                                   \
