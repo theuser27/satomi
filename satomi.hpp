@@ -485,7 +485,7 @@ namespace satomi
           __asm__ __volatile__                                                                                          \
           (                                                                                                             \
             "casp" load_order store_order " %x[expected_0], %x[expected_1], %x[desired_0], %x[desired_1], %[target]\n\t"\
-            : [target] "+Q" (*(SATOMI_U64 *)&target), [expected_0] "+r" (x8), [expected_1] "+r" (x9)                     \
+            : [target] "+Q" (*(SATOMI_U64 *)&target), [expected_0] "+r" (x8), [expected_1] "+r" (x9)                    \
             : [desired_0] "r" (x10), [desired_1] "r" (x11)                                                              \
             : "cc", "memory"                                                                                            \
           );
@@ -610,79 +610,90 @@ namespace satomi
 
   #elif defined(__aarch64__)
 
-    if constexpr (SATOMI_HAS_PADDING_BITS(T))
-      SATOMI_CLEAR_PADDING_BITS(&desired);
+    // builtin CAS support with ARM LSE 1
+    #ifdef __ARM_FEATURE_ATOMICS
 
-    #pragma push_macro("SATOMI_MSVC_STL_SEQ_CST_FENCE")
-    #undef SATOMI_MSVC_STL_SEQ_CST_FENCE
-    #define SATOMI_MSVC_STL_SEQ_CST_FENCE "cbnz %w[success], 1f\n\t" "dmb ish\n\t"
+      // compare_exchange_weak an compare_exchange_strong are identical on ARM LSE 1
+      return atomic_compare_exchange_strong(target, expected, desired, order);
 
-    #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, /*zero extend instruction*/...)\
-      __asm__ __volatile__                                                                                                \
-      (                                                                                                                   \
-        __VA_ARGS__                                                                                                       \
-        "ld" load_order "xr" suffix " " modifier "[out], %[target]\n\t"                                                   \
-        "cmp " modifier "[out], " modifier "[expected]\n\t"                                                               \
-        "b.ne 1f\n\t"                                                                                                     \
-        "st" store_order "xr" suffix " %w[success], " modifier "[desired], %[target]\n\t"                                 \
-        msvc_fence                                                                                                        \
-        "1:\n\t"                                                                                                          \
-        "cset %w[success], eq\n\t"                                                                                        \
-        : [target] "+Q" (target), [success] "=&r" (success), [out] "=&r" (out)                                            \
-        : [desired] "r" (desired), [expected] "r" (expected)                                                              \
-        : "cc", "memory"                                                                                                  \
-      );
+    #else
 
-    #define SATOMI_PASTE_BLOCK(order, type, ...)                \
-      type out;                                                 \
-      SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, type, __VA_ARGS__); \
-      if (!success)                                             \
-        expected = SATOMI_BIT_CAST(T, out);                     \
-      return success
+      if constexpr (SATOMI_HAS_PADDING_BITS(T))
+        SATOMI_CLEAR_PADDING_BITS(&desired);
 
-    bool success;
-    if constexpr (sizeof(T) == 1) { SATOMI_PASTE_BLOCK(order, __UINT8_TYPE__, "b", "%w", "uxtb %w[expected], %w[expected]\n\t"); }
-    else if constexpr (sizeof(T) == 2) { SATOMI_PASTE_BLOCK(order, __UINT16_TYPE__, "h", "%w", "uxth %w[expected], %w[expected]\n\t"); }
-    else if constexpr (sizeof(T) == 4) { SATOMI_PASTE_BLOCK(order, __UINT32_TYPE__, "", "%w", ""); }
-    else if constexpr (sizeof(T) == 8) { SATOMI_PASTE_BLOCK(order, __UINT64_TYPE__, "", "%x", ""); }
-    else if constexpr (sizeof(T) == 16)
-    {
-      struct alignas(16) uint128__ { SATOMI_U64 v[2]; } out;
-      auto e = SATOMI_BIT_CAST(uint128__, expected);
-      auto d = SATOMI_BIT_CAST(uint128__, desired);
-      bool success;
+      #pragma push_macro("SATOMI_MSVC_STL_SEQ_CST_FENCE")
+      #undef SATOMI_MSVC_STL_SEQ_CST_FENCE
+      #define SATOMI_MSVC_STL_SEQ_CST_FENCE "cbz %w[success], 1f\n\t" "dmb ish\n\t"
 
-      #undef SATOMI_ATOMIC_ASM
-      #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, ...)               \
-        __asm__ __volatile__                                                            \
-        (                                                                               \
-          "ld" load_order "xp %x[out_0], %x[out_1], %[target]\n\t"                      \
-          "cmp %x[out_0], %x[expected_0]\n\t"                                           \
-          "ccmp %x[out_1], %x[expected_1], #0, eq\n\t"                                  \
-          "b.ne 1f\n\t"                                                                 \
-          "st" store_order "xp %w[success], %x[desired_0], %x[desired_1], %[target]\n\t"\
-          msvc_fence                                                                    \
-          "1:\n\t"                                                                      \
-          "cset %w[success], eq\n\t"                                                    \
-          : [success] "=&r" (success), [target] "+Q" (target),                          \
-            [out_0] "=&r" (out.v[0]), [out_1] "=&r" (out.v[1])                          \
-          : [desired_0] "r" (d.v[0]), [desired_1] "r" (d.v[1]),                         \
-            [expected_0] "r" (e.v[0]), [expected_1] "r" (e.v[1])                        \
-          : "cc", "memory"                                                              \
+      #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, /*zero extend instruction*/...)\
+        __asm__ __volatile__                                                                                                \
+        (                                                                                                                   \
+          __VA_ARGS__                                                                                                       \
+          "ld" load_order "xr" suffix " " modifier "[out], %[target]\n\t"                                                   \
+          "cmp " modifier "[out], " modifier "[expected]\n\t"                                                               \
+          "b.ne 1f\n\t"                                                                                                     \
+          "st" store_order "xr" suffix " %w[success], " modifier "[desired], %[target]\n\t"                                 \
+          /* necessary bitnot because stxr/stxp return 0/1 for success/failure... */                                        \
+          "eor %w[success], %w[success], #1\n\t"                                                                            \
+          msvc_fence                                                                                                        \
+          "1:\n\t"                                                                                                          \
+          : [target] "+Q" (target), [success] "+&r" (success), [out] "=&r" (out)                                            \
+          : [desired] "r" (desired), [expected] "r" (expected)                                                              \
+          : "cc", "memory"                                                                                                  \
         );
 
-      SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
-      #undef SATOMI_ATOMIC_ASM
+      #define SATOMI_PASTE_BLOCK(order, type, ...)                \
+        type out;                                                 \
+        SATOMI_CHOOSE_MEMORY_ORDER_ASM(order, type, __VA_ARGS__); \
+        if (!success)                                             \
+          expected = SATOMI_BIT_CAST(T, out);                     \
+        return success
 
-      if (!success)
-        expected = SATOMI_BIT_CAST(T, out);
-      return success;
-    }
+      bool success = false;
+      if constexpr (sizeof(T) == 1) { SATOMI_PASTE_BLOCK(order, __UINT8_TYPE__, "b", "%w", "uxtb %w[expected], %w[expected]\n\t"); }
+      else if constexpr (sizeof(T) == 2) { SATOMI_PASTE_BLOCK(order, __UINT16_TYPE__, "h", "%w", "uxth %w[expected], %w[expected]\n\t"); }
+      else if constexpr (sizeof(T) == 4) { SATOMI_PASTE_BLOCK(order, __UINT32_TYPE__, "", "%w", ""); }
+      else if constexpr (sizeof(T) == 8) { SATOMI_PASTE_BLOCK(order, __UINT64_TYPE__, "", "%x", ""); }
+      else if constexpr (sizeof(T) == 16)
+      {
+        struct alignas(16) uint128__ { SATOMI_U64 v[2]; } out;
+        auto e = SATOMI_BIT_CAST(uint128__, expected);
+        auto d = SATOMI_BIT_CAST(uint128__, desired);
 
-    #undef SATOMI_PASTE_BLOCK
-    #pragma pop_macro("SATOMI_MSVC_STL_SEQ_CST_FENCE")
+        #undef SATOMI_ATOMIC_ASM
+        #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, ...)               \
+          __asm__ __volatile__                                                            \
+          (                                                                               \
+            "ld" load_order "xp %x[out_0], %x[out_1], %[target]\n\t"                      \
+            "cmp %x[out_0], %x[expected_0]\n\t"                                           \
+            "ccmp %x[out_1], %x[expected_1], #0, eq\n\t"                                  \
+            "b.ne 1f\n\t"                                                                 \
+            "st" store_order "xp %w[success], %x[desired_0], %x[desired_1], %[target]\n\t"\
+            /* necessary bitnot because stxr/stxp return 0/1 for success/failure... */    \
+            "eor %w[success], %w[success], #1\n\t"                                        \
+            msvc_fence                                                                    \
+            "1:\n\t"                                                                      \
+            : [success] "+&r" (success), [target] "+Q" (target),                          \
+              [out_0] "=&r" (out.v[0]), [out_1] "=&r" (out.v[1])                          \
+            : [desired_0] "r" (d.v[0]), [desired_1] "r" (d.v[1]),                         \
+              [expected_0] "r" (e.v[0]), [expected_1] "r" (e.v[1])                        \
+            : "cc", "memory"                                                              \
+          );
 
-    return 0;
+        SATOMI_CHOOSE_MEMORY_ORDER_ASM(order)
+        #undef SATOMI_ATOMIC_ASM
+
+        if (!success)
+          expected = SATOMI_BIT_CAST(T, out);
+        return success;
+      }
+
+      #undef SATOMI_PASTE_BLOCK
+      #pragma pop_macro("SATOMI_MSVC_STL_SEQ_CST_FENCE")
+
+      return 0;
+
+    #endif
 
   #endif
   }
@@ -1248,6 +1259,7 @@ namespace satomi
     {
       struct alignas(16) uint128__ { SATOMI_U64 v[2]; };
       auto v = SATOMI_BIT_CAST(uint128__, value);
+      (void)v;
 
     // checking for ARMv8.4 (LDP and STP)
     #if __ARM_FEATURE_DOTPROD
@@ -1426,7 +1438,7 @@ namespace satomi
       #ifdef __ARM_FEATURE_ATOMICS
 
         #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier)                    \
-          type temp, original;                                                                                    \
+          type original;                                                                                          \
           auto o = SATOMI_BIT_CAST(type, operand);                                                                \
           __asm__ __volatile__                                                                                    \
           (                                                                                                       \
@@ -1545,13 +1557,13 @@ namespace satomi
     #ifdef __ARM_FEATURE_ATOMICS
 
       #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, ...)                       \
-        type ret, temp;                                                                                                 \
+        type ret;                                                                                                       \
         auto o = SATOMI_BIT_CAST(type, operand);                                                                        \
         __VA_ARGS__                                                                                                     \
         __asm__ __volatile__                                                                                            \
         (                                                                                                               \
           SATOMI_ATOMIC_OP load_order store_order suffix " " modifier "[operand], " modifier "[original], %[target]\n\t"\
-          : [target] "+Q" (*(type *)&target), [original] "=&r" (ret)                                                     \
+          : [target] "+Q" (*(type *)&target), [original] "=&r" (ret)                                                    \
           : [operand] "r" (o)                                                                                           \
           : "memory"                                                                                                    \
         );                                                                                                              \

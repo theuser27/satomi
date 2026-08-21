@@ -601,7 +601,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size,
 
     #pragma push_macro("SATOMI_MSVC_STL_SEQ_CST_FENCE")
     #undef SATOMI_MSVC_STL_SEQ_CST_FENCE
-    #define SATOMI_MSVC_STL_SEQ_CST_FENCE "cbnz %w[success], 1f\n\t" "dmb ish\n\t"
+    #define SATOMI_MSVC_STL_SEQ_CST_FENCE "cbz %w[success], 1f\n\t" "dmb ish\n\t"
 
     #define SATOMI_ATOMIC_ASM(load_order, store_order, msvc_fence, type, suffix, modifier, /*zero extend instruction*/...)\
       __asm__ __volatile__                                                                                                \
@@ -611,10 +611,11 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size,
         "cmp " modifier "[out], " modifier "[expected]\n\t"                                                               \
         "b.ne 1f\n\t"                                                                                                     \
         "st" store_order "xr" suffix " %w[success], " modifier "[desired], %[target]\n\t"                                 \
+        /* necessary bitnot because stxr/stxp return 0/1 for success/failure... */                                        \
+        "eor %w[success], %w[success], #1\n\t"                                                                            \
         msvc_fence                                                                                                        \
         "1:\n\t"                                                                                                          \
-        "cset %w[success], eq\n\t"                                                                                        \
-        : [target] "+Q" (*(type *)target), [success] "=&r" (success), [out] "=&r" (out)                                   \
+        : [target] "+Q" (*(type *)target), [success] "+&r" (success), [out] "=&r" (out)                                   \
         : [desired] "r" (*(type *)desired), [expected] "r" (*(type *)expected)                                            \
         : "cc", "memory"                                                                                                  \
       );
@@ -626,7 +627,7 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size,
         SATOMI_MEMCPY(size, expected, &out);                    \
       return success
 
-    SATOMI_BOOL success;
+    SATOMI_BOOL success = false;
     if (size == 1) { SATOMI_PASTE_BLOCK(order, __UINT8_TYPE__, "b", "%w", "uxtb %w[expected], %w[expected]\n\t"); }
     else if (size == 2) { SATOMI_PASTE_BLOCK(order, __UINT16_TYPE__, "h", "%w", "uxth %w[expected], %w[expected]\n\t"); }
     else if (size == 4) { SATOMI_PASTE_BLOCK(order, __UINT32_TYPE__, "", "%w", ""); }
@@ -647,10 +648,11 @@ SATOMI_INLINE SATOMI_BOOL satomi__atomic_compare_exchange_weak(SATOMI_U64 size,
           "ccmp %x[out_1], %x[expected_1], #0, eq\n\t"                                  \
           "b.ne 1f\n\t"                                                                 \
           "st" store_order "xp %w[success], %x[desired_0], %x[desired_1], %[target]\n\t"\
+          /* necessary bitnot because stxr/stxp return 0/1 for success/failure... */    \
+          "eor %w[success], %w[success], #1\n\t"                                        \
           msvc_fence                                                                    \
           "1:\n\t"                                                                      \
-          "cset %w[success], eq\n\t"                                                    \
-          : [success] "=&r" (success), [target] "+Q" (*(struct uint128__ *)target),     \
+          : [success] "+&r" (success), [target] "+Q" (*(struct uint128__ *)target),     \
             [out_0] "=&r" (out.v[0]), [out_1] "=&r" (out.v[1])                          \
           : [desired_0] "r" (d.v[0]), [desired_1] "r" (d.v[1]),                         \
             [expected_0] "r" (e.v[0]), [expected_1] "r" (e.v[1])                        \
@@ -1248,6 +1250,7 @@ SATOMI_INLINE void satomi__atomic_store(SATOMI_U64 size,
   {
     struct SATOMI_ALIGNAS(16) uint128__ { SATOMI_U64 v[2]; } v;
     SATOMI_MEMCPY(size, &v, value);
+    (void)v;
 
   // checking for ARMv8.4 (LDP and STP)
   #if __ARM_FEATURE_DOTPROD
