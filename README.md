@@ -8,7 +8,7 @@ Completely lock-less atomic headers:
 `satomi.hpp` for C++20 (mirroring `<atomic>` which is also `constexpr`)
 
 ## Why does this exist?
-Portable lock-less 16 byte atomics on x86 don't exist (with the exception of [boost.atomic](https://github.com/boostorg/atomic)) at the time of writing. This library was created to unify behaviours across compilers, while being simple to use and maintain.
+Portable lock-less 16 byte C/C++ atomics on x86-64 don't exist (with the exception of [boost.atomic](https://github.com/boostorg/atomic)) at the time of writing. This library was created to unify behaviours across compilers, while being simple to use and maintain.
 
 From the big 3: 
  - Clang is the only one with support for them but they are hidden behind a compiler flag (`-mcx16`), 
@@ -35,7 +35,7 @@ In the C++20 version:
 
 ## Warnings and Caveats
 1. If you're using the C99 version of the library, please **MAKE SURE TO CLEAR PADDING** bits otherwise `compare_exchange`s will **FAIL** even if the value-representation matches. In the C++20 version that's taken care of by intrinsics that are not available in C99.
-2. Only x86-64 and aarch64 (little endian only) are supported.
+2. Only x86-64 and aarch64 (little endian only) are supported, but other architectures can easily be added.
 3. Objects larger than what the CPU architecture allows for CAS operations (16 bytes) are not supported since they require locks. Create your own mechanisms with the atomics here (using the wait/notify primitives) if you have such a use case.
 4. When using the free functions or C++20 atomic_ref to do atomic operations you have to make sure your variables are self-aligned (meaning `object address` % `object size` == 0). If alignment isn't honoured the functions WILL abort (`SIGILL`/`SIGTRAP`) the program because you will get UB otherwise.
 

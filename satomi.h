@@ -66,7 +66,12 @@ extern "C"
 
 #if defined(_WIN64)
 
-  int __stdcall WaitOnAddress(volatile void *Address, void *CompareAddress, unsigned __int64 AddressSize, unsigned long dwMilliseconds);
+  #ifdef _MSC_VER
+    int __stdcall WaitOnAddress(volatile void *Address, void *CompareAddress, unsigned __int64 AddressSize, unsigned long dwMilliseconds);
+  #else
+    int __stdcall WaitOnAddress(volatile void *Address, void *CompareAddress, __UINT64_TYPE__ AddressSize, __UINT32_TYPE__ dwMilliseconds);
+  #endif
+
   void __stdcall WakeByAddressSingle(void *Address);
   void __stdcall WakeByAddressAll(void *Address);
   #pragma comment(lib, "Synchronization.lib")
@@ -216,7 +221,7 @@ extern "C"
     #pragma GCC diagnostic ignored "-Wstringop-overread"
   #elif defined(__clang__)
     #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wvariadic-macro-arguments-omitted"
+    // #pragma GCC diagnostic ignored "-Wvariadic-macro-arguments-omitted"
   #endif
 
   #define SATOMI_TRAP() __builtin_trap()
